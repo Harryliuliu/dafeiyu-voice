@@ -1,6 +1,8 @@
 # 模型、工具仓库（各自有自己的 git，体积大）
 mlx-indextts/
 seed-vc/
+# 第三方程序（go-music-dl 命令行版，从它的 GitHub 发布页下载 darwin_arm64 包解压到这里）
+go-music-dl/
 # 歌曲、音频、音色（版权与声音主人隐私，不公开不上传）
 歌曲库/
 voices/

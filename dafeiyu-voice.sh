@@ -5,10 +5,12 @@
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh start   [tts|sing|all]   启动并等到能用（默认 all）
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh stop    [tts|sing|all]   停止
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh restart [tts|sing|all]
-#   bash ~/dafeiyu-tools/dafeiyu-voice.sh status  [tts|sing|all]
+#   bash ~/dafeiyu-tools/dafeiyu-voice.sh status  [tts|sing|musicdl|all]
 #
 # tts = 说话服务（127.0.0.1:9880，闲置 15 分钟自动退出）
 # sing = 唱歌服务（127.0.0.1:9881，闲置 5 分钟自动退出）
+# musicdl = 学歌用的 go-music-dl（127.0.0.1:37777，开机自动常驻；start/stop 也可单独管它，
+#           stop 后要手动 start 才会回来；all 不含它，status all 会显示它）
 # 想让服务一直开着：DAFEIYU_TTS_IDLE=0 / DAFEIYU_SING_IDLE=0 再 start。
 # AstrBot 插件也是调用这个脚本来按需拉起服务。
 
@@ -25,10 +27,38 @@ svc_py() {
     sing) echo "$TOOLS/seed-vc/.venv/bin/python" ;;
   esac
 }
-svc_port() { case "$1" in tts) echo 9880 ;; sing) echo 9881 ;; esac; }
-svc_name() { case "$1" in tts) echo "说话服务" ;; sing) echo "唱歌服务" ;; esac; }
+svc_port() { case "$1" in tts) echo 9880 ;; sing) echo 9881 ;; musicdl) echo 37777 ;; esac; }
+svc_name() { case "$1" in tts) echo "说话服务" ;; sing) echo "唱歌服务" ;; musicdl) echo "音乐下载（go-music-dl）" ;; esac; }
 
-health() { curl -s -m 2 "http://127.0.0.1:$(svc_port "$1")/health"; }
+health() {
+  if [ "$1" = musicdl ]; then curl -s -m 2 "http://127.0.0.1:37777/music/healthz"; return; fi
+  curl -s -m 2 "http://127.0.0.1:$(svc_port "$1")/health"
+}
+
+# go-music-dl 由 launchd 管（开机自启、崩溃自动重启），这里只是装载 / 卸载它
+MDL_LABEL="com.dafeiyu.musicdl"
+MDL_PLIST="$HOME/Library/LaunchAgents/$MDL_LABEL.plist"
+start_musicdl() {
+  local name i
+  name="$(svc_name musicdl)"
+  case "$(health musicdl)" in *'"app":"go-music-dl"'*) echo "${name}：已在运行"; return 0 ;; esac
+  if launchctl print "gui/$(id -u)/$MDL_LABEL" > /dev/null 2>&1; then
+    launchctl kickstart -k "gui/$(id -u)/$MDL_LABEL"
+  else
+    launchctl bootstrap "gui/$(id -u)" "$MDL_PLIST" || { echo "${name}：装载失败（$MDL_PLIST）"; return 1; }
+  fi
+  for i in $(seq 1 20); do
+    case "$(health musicdl)" in *'"app":"go-music-dl"'*) echo "${name}：就绪"; return 0 ;; esac
+    sleep 0.5
+  done
+  echo "${name}：没起来。桌面版 music-dl-desktop-go 开着的话会占用 37777 端口，先退出它；日志 $LOG/musicdl.log"
+  tail -5 "$LOG/musicdl.log" 2>/dev/null
+  return 1
+}
+stop_musicdl() {
+  launchctl bootout "gui/$(id -u)/$MDL_LABEL" > /dev/null 2>&1
+  echo "$(svc_name musicdl)：已停止（下次开机会自动启动；现在要用就 start musicdl）"
+}
 
 rotate_log() {  # 日志超过 5 MB 时留一份旧的
   local f="$LOG/$1_server.log"
@@ -51,6 +81,7 @@ take_lock() {  # 同一个服务同一时间只让一个人去启动；mkdir 是
 
 start_one() {
   local s="$1" name pid i out
+  if [ "$s" = musicdl ]; then start_musicdl; return; fi
   name="$(svc_name "$s")"
   take_lock "$s" || { echo "${name}：等别人启动等太久了"; return 1; }
   case "$(health "$s")" in
@@ -82,6 +113,7 @@ start_one() {
 
 stop_one() {
   local s="$1" name pidf pid i
+  if [ "$s" = musicdl ]; then stop_musicdl; return; fi
   name="$(svc_name "$s")"
   pidf="$RUN/${s}_server.pid"
   if [ -z "$(health "$s")" ] && [ ! -f "$pidf" ]; then echo "${name}：没在运行"; return 0; fi
@@ -118,8 +150,8 @@ usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
 cmd="${1:-status}"
 target="${2:-all}"
 case "$target" in
-  tts | sing) list="$target" ;;
-  all) list="tts sing" ;;
+  tts | sing | musicdl) list="$target" ;;
+  all) list="tts sing"; [ "$cmd" = status ] && list="tts sing musicdl" ;;
   *) usage; exit 2 ;;
 esac
 

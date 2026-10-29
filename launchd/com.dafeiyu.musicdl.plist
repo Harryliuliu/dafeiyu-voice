@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.dafeiyu.musicdl</string>
+  <!-- go-music-dl 命令行版，桌面内嵌模式：只听 127.0.0.1:37777，和桌面版共用登录与设置 -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/no1vo/dafeiyu-tools/go-music-dl/music-dl</string>
+    <string>web</string>
+    <string>--desktop</string>
+    <string>--port</string><string>37777</string>
+    <string>--no-browser</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/no1vo/Library/Application Support/music-dl</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>MUSIC_DL_CONFIG_DB</key><string>/Users/no1vo/Library/Application Support/music-dl/data/settings.db</string>
+    <key>MUSIC_DL_COOKIE_FILE</key><string>/Users/no1vo/Library/Application Support/music-dl/data/cookies.json</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>/Users/no1vo/dafeiyu-tools/logs/musicdl.log</string>
+  <key>StandardErrorPath</key><string>/Users/no1vo/dafeiyu-tools/logs/musicdl.log</string>
+</dict>
+</plist>

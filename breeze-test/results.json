@@ -1,0 +1,140 @@
+{
+  "index_1": {
+    "model": "IndexTTS2",
+    "emotion": "开心",
+    "file": "1_开心_IndexTTS2.wav",
+    "text": "太好啦！你终于来群里陪我聊天了，我今天超级开心的！",
+    "seconds": 17.73,
+    "audio_seconds": 6.84,
+    "peak_rss_mb": 12716,
+    "cache": "miss",
+    "server_gen_seconds": "17.72"
+  },
+  "index_2": {
+    "model": "IndexTTS2",
+    "emotion": "傲娇",
+    "file": "2_傲娇_IndexTTS2.wav",
+    "text": "哼，谁、谁想你了啊？我只是刚好有空，才勉强回你一句而已。",
+    "seconds": 15.57,
+    "audio_seconds": 6.86,
+    "peak_rss_mb": 12719,
+    "cache": "miss",
+    "server_gen_seconds": "15.57"
+  },
+  "index_3": {
+    "model": "IndexTTS2",
+    "emotion": "委屈",
+    "file": "3_委屈_IndexTTS2.wav",
+    "text": "我明明等了你一整天，你却连一条消息都不回我……",
+    "seconds": 19.08,
+    "audio_seconds": 7.78,
+    "peak_rss_mb": 12715,
+    "cache": "miss",
+    "server_gen_seconds": "19.08"
+  },
+  "index_4": {
+    "model": "IndexTTS2",
+    "emotion": "害羞",
+    "file": "4_害羞_IndexTTS2.wav",
+    "text": "你、你别一直盯着我看嘛，人家会不好意思的。",
+    "seconds": 14.28,
+    "audio_seconds": 5.94,
+    "peak_rss_mb": 12723,
+    "cache": "miss",
+    "server_gen_seconds": "14.28"
+  },
+  "index_5": {
+    "model": "IndexTTS2",
+    "emotion": "惊讶",
+    "file": "5_惊讶_IndexTTS2.wav",
+    "text": "什么？你说这条鱼已经养了五年了？真的假的！",
+    "seconds": 12.23,
+    "audio_seconds": 5.14,
+    "peak_rss_mb": 12720,
+    "cache": "miss",
+    "server_gen_seconds": "12.23"
+  },
+  "index_6": {
+    "model": "IndexTTS2",
+    "emotion": "平静",
+    "file": "6_平静_IndexTTS2.wav",
+    "text": "今天天气还不错，晚上早点休息，明天见。",
+    "seconds": 17.73,
+    "audio_seconds": 7.42,
+    "peak_rss_mb": 12766,
+    "cache": "miss",
+    "server_gen_seconds": "17.72"
+  },
+  "breeze_1": {
+    "model": "Breeze TTS 2",
+    "emotion": "开心",
+    "file": "1_开心_Breeze.wav",
+    "text": "[笑] 太好啦！你终于来群里陪我聊天了，我今天超级开心的！",
+    "instruct": "保持参考音频的音色，用自然说话的方式（不要唱），开心雀跃的语气，声音明亮，语速稍快，带着笑意。",
+    "seconds": 6.86,
+    "audio_seconds": 4.96,
+    "peak_rss_mb": 13553,
+    "mlx_peak_mb": 10152,
+    "load_seconds": 11.7
+  },
+  "breeze_2": {
+    "model": "Breeze TTS 2",
+    "emotion": "傲娇",
+    "file": "2_傲娇_Breeze.wav",
+    "text": "哼，谁、谁想你了啊？我只是刚好有空，才勉强回你一句而已。",
+    "instruct": "保持参考音频的音色，用自然说话的方式（不要唱），嘴硬心软的傲娇语气：表面不耐烦、有点别扭，其实心里很高兴，尾音略带撒娇。",
+    "seconds": 11.83,
+    "audio_seconds": 7.44,
+    "peak_rss_mb": 18575,
+    "mlx_peak_mb": 10515,
+    "load_seconds": 11.7
+  },
+  "breeze_3": {
+    "model": "Breeze TTS 2",
+    "emotion": "委屈",
+    "file": "3_委屈_Breeze.wav",
+    "text": "[叹气] 我明明等了你一整天，你却连一条消息都不回我……",
+    "instruct": "保持参考音频的音色，用自然说话的方式（不要唱），委屈的语气，声音低落、带一点哭腔，像忍着眼泪小声抱怨。",
+    "seconds": 9.87,
+    "audio_seconds": 5.36,
+    "peak_rss_mb": 21000,
+    "mlx_peak_mb": 10321,
+    "load_seconds": 11.7
+  },
+  "breeze_4": {
+    "model": "Breeze TTS 2",
+    "emotion": "害羞",
+    "file": "4_害羞_Breeze.wav",
+    "text": "你、你别一直盯着我看嘛，人家会不好意思的。",
+    "instruct": "保持参考音频的音色，用自然说话的方式（不要唱），害羞的语气，声音轻柔、有点迟疑和结巴，像是脸红了不好意思。",
+    "seconds": 10.15,
+    "audio_seconds": 6.4,
+    "peak_rss_mb": 21028,
+    "mlx_peak_mb": 9212,
+    "load_seconds": 11.7
+  },
+  "breeze_5": {
+    "model": "Breeze TTS 2",
+    "emotion": "惊讶",
+    "file": "5_惊讶_Breeze.wav",
+    "text": "什么？你说这条鱼已经养了五年了？真的假的！",
+    "instruct": "保持参考音频的音色，用自然说话的方式（不要唱），非常惊讶的语气，语调明显上扬，带着难以置信的感觉。",
+    "seconds": 9.14,
+    "audio_seconds": 6.0,
+    "peak_rss_mb": 21024,
+    "mlx_peak_mb": 8703,
+    "load_seconds": 11.7
+  },
+  "breeze_6": {
+    "model": "Breeze TTS 2",
+    "emotion": "平静",
+    "file": "6_平静_Breeze.wav",
+    "text": "今天天气还不错，晚上早点休息，明天见。",
+    "instruct": "保持参考音频的音色，用自然说话的方式（不要唱），平静温和的语气，语速平稳，放松自然。",
+    "seconds": 10.76,
+    "audio_seconds": 7.28,
+    "peak_rss_mb": 21024,
+    "mlx_peak_mb": 9119,
+    "load_seconds": 11.7
+  }
+}

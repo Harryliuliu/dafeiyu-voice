@@ -28,3 +28,9 @@ __pycache__/
 .env
 *cookie*
 *token*
+# Breeze TTS 2 试跑：环境、模型、对比音频都很大，不上传（ab_test.py、results.json 留着）
+breeze-test/.venv/
+breeze-test/models/
+breeze-test/对比/
+tts_engine.conf
+breeze-test/logs_download.txt

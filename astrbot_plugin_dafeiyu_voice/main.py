@@ -42,6 +42,14 @@ YES_RE = re.compile(r"^(是|是的|对|对的|对呀|对啊|嗯|嗯嗯|好|好�
 NO_RE = re.compile(r"^(不是|不对|不|不要|否|算了|取消|没|no|n)[!！~。.呀啊的]*$", re.I)
 ASK_TIMEOUT = 60
 UNSINGABLE = ("too_high", "too_low", "no_vocals", "too_short")
+# 说话模型二选一（dafeiyu-voice.sh engine 切换，记在 tts_engine.conf）
+MODEL_NAMES = {"index": "IndexTTS2", "breeze": "Breeze TTS 2"}
+MODEL_ALIASES = {"indextts": "index", "indextts2": "index", "breezetts": "breeze", "breezetts2": "breeze"}
+
+
+def model_label(health: dict) -> str:
+    """从说话服务的 /health 看正在跑的是哪个模型（IndexTTS2 版没有 engine 字段）。"""
+    return MODEL_NAMES.get(health.get("engine") or "index", "未知模型")
 
 
 class SenderFilter(SessionFilter):
@@ -754,7 +762,7 @@ class DafeiyuVoice(Star):
         on = chat.get("voice", True) and self.cfg("voice_enable", True)
         prob = chat.get("prob", self.cfg("voice_probability", 0.3))
         h = await self.health("tts")
-        svc = "运行中" if h else "没开（需要时自动打开）"
+        svc = f"运行中（{model_label(h)}）" if h else f"没开（需要时自动打开，模型 {MODEL_NAMES[self.selected_model()]}）"
         yield event.plain_result(
             f"本群语音回复：{'开' if on else '关'}，随机概率 {prob:g}，"
             f"每分钟最多 {self.cfg('voice_per_minute', 3)} 条，超过 {self.cfg('max_voice_chars', 60)} 字发文字\n"
@@ -783,6 +791,49 @@ class DafeiyuVoice(Star):
         yield event.plain_result(out.decode(errors="ignore").strip() or "已关闭")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
+    @service_group.command("模型")
+    async def service_model(self, event: AstrMessageEvent, name: str = ""):
+        """看 / 切换说话用的模型：/声音 模型 index 或 /声音 模型 breeze（二选一，不影响唱歌）"""
+        name = MODEL_ALIASES.get(name.strip().lower(), name.strip().lower())
+        if name and name not in MODEL_NAMES:
+            yield event.plain_result("只能选 index（IndexTTS2，情绪更强烈）或 breeze（Breeze TTS 2，声音更好听）")
+            return
+        if not name:
+            h = await self.health("tts")
+            now = f"正在运行 {model_label(h)}" if h else "说话服务没开"
+            yield event.plain_result(f"说话模型选的是 {MODEL_NAMES[self.selected_model()]}（{now}）\n"
+                                     "切换：/声音 模型 index 或 /声音 模型 breeze")
+            return
+        if name == self.selected_model():
+            yield event.plain_result(f"说话模型本来就是 {MODEL_NAMES[name]}")
+            return
+        yield event.plain_result(f"正在切换到 {MODEL_NAMES[name]}，说话服务开着的话要重启，稍等……")
+        script = str(Path(self.cfg("control_script") or "~/dafeiyu-tools/dafeiyu-voice.sh").expanduser())
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "/bin/bash", script, "engine", name,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,  # 重启出来的服务和 AstrBot 分开
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            yield event.plain_result("切换等了 5 分钟还没好，用 /声音 状态 看看")
+            return
+        except OSError as e:
+            yield event.plain_result(f"启停脚本运行失败：{e}")
+            return
+        yield event.plain_result(out.decode(errors="ignore").strip() or "已切换")
+
+    def selected_model(self) -> str:
+        """启停脚本记下的说话模型（index / breeze），没记就是 index。"""
+        script = Path(self.cfg("control_script") or "~/dafeiyu-tools/dafeiyu-voice.sh").expanduser()
+        try:
+            name = (script.parent / "tts_engine.conf").read_text().strip()
+        except OSError:
+            name = ""
+        return name if name in MODEL_NAMES else "index"
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @service_group.command("状态")
     async def service_status(self, event: AstrMessageEvent):
         """看两个服务开没开"""
@@ -790,4 +841,6 @@ class DafeiyuVoice(Star):
             if not h:
                 return "没开"
             return {"ready": "运行中", "loading": "启动中", "error": f"出错：{h.get('error')}"}.get(h.get("status"), "未知")
-        yield event.plain_result(f"说话服务：{desc(await self.health('tts'))}；唱歌服务：{desc(await self.health('sing'))}")
+        tts = await self.health("tts")
+        model = model_label(tts) if tts else f"选的是 {MODEL_NAMES[self.selected_model()]}"
+        yield event.plain_result(f"说话服务（{model}）：{desc(tts)}；唱歌服务：{desc(await self.health('sing'))}")

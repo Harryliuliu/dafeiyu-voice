@@ -6,8 +6,12 @@
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh stop    [tts|sing|all]   停止
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh restart [tts|sing|all]
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh status  [tts|sing|musicdl|all]
+#   bash ~/dafeiyu-tools/dafeiyu-voice.sh engine  [index|breeze]       看 / 切换说话用的模型
 #
-# tts = 说话服务（127.0.0.1:9880，闲置 15 分钟自动退出）
+# tts = 说话服务（127.0.0.1:9880，闲置 15 分钟自动退出）。两个模型二选一，占同一个端口：
+#       index  = IndexTTS2（默认，情绪更强烈）
+#       breeze = Breeze TTS 2（声音更好听；仅限非商业用途）
+#       切换时说话服务正开着就自动重启成新模型；唱歌不受影响。
 # sing = 唱歌服务（127.0.0.1:9881，闲置 5 分钟自动退出）
 # musicdl = 学歌用的 go-music-dl（127.0.0.1:37777，开机自动常驻；start/stop 也可单独管它，
 #           stop 后要手动 start 才会回来；all 不含它，status all 会显示它）
@@ -21,10 +25,32 @@ RUN="$TOOLS/run"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 mkdir -p "$LOG" "$RUN"
 
+# 说话用哪个模型，记在这个文件里（index / breeze），没有就是 index
+ENGINE_FILE="$TOOLS/tts_engine.conf"
+engine() {
+  local e
+  [ -f "$ENGINE_FILE" ] && e="$(tr -d ' \t\r\n' < "$ENGINE_FILE")"
+  case "$e" in breeze) echo breeze ;; *) echo index ;; esac
+}
+engine_label() { case "$1" in breeze) echo "Breeze TTS 2" ;; *) echo "IndexTTS2" ;; esac; }
+running_engine() {  # 正在跑的说话服务是哪个模型；没在跑就输出空
+  local h
+  h="$(health tts)"
+  [ -z "$h" ] && return
+  case "$h" in *'"engine":"breeze"'*) echo breeze ;; *) echo index ;; esac
+}
+
 svc_py() {
   case "$1" in
-    tts) echo "$TOOLS/mlx-indextts/.venv/bin/python" ;;
+    tts) if [ "$(engine)" = breeze ]; then echo "$TOOLS/breeze-test/.venv/bin/python"
+         else echo "$TOOLS/mlx-indextts/.venv/bin/python"; fi ;;
     sing) echo "$TOOLS/seed-vc/.venv/bin/python" ;;
+  esac
+}
+svc_script() {
+  case "$1" in
+    tts) if [ "$(engine)" = breeze ]; then echo "$TOOLS/breeze_tts_server.py"; else echo "$TOOLS/tts_server.py"; fi ;;
+    *) echo "$TOOLS/${1}_server.py" ;;
   esac
 }
 svc_port() { case "$1" in tts) echo 9880 ;; sing) echo 9881 ;; musicdl) echo 37777 ;; esac; }
@@ -83,13 +109,20 @@ start_one() {
   local s="$1" name pid i out
   if [ "$s" = musicdl ]; then start_musicdl; return; fi
   name="$(svc_name "$s")"
+  [ "$s" = tts ] && name="${name}（$(engine_label "$(engine)")）"
   take_lock "$s" || { echo "${name}：等别人启动等太久了"; return 1; }
   case "$(health "$s")" in
-    *'"status":"ready"'*) echo "${name}：已在运行"; return 0 ;;
+    *'"status":"ready"'*)
+      if [ "$s" = tts ] && [ "$(running_engine)" != "$(engine)" ]; then
+        echo "说话服务：已在运行，但用的是 $(engine_label "$(running_engine)")（要换就 restart tts）"
+      else
+        echo "${name}：已在运行"
+      fi
+      return 0 ;;
     *'"status":"loading"'*) echo "${name}：正在启动（另一个请求拉起的），等它就绪" ;;
     *)
       rotate_log "$s"
-      nohup "$(svc_py "$s")" "$TOOLS/${s}_server.py" >> "$LOG/${s}_server.log" 2>&1 < /dev/null &
+      nohup "$(svc_py "$s")" "$(svc_script "$s")" >> "$LOG/${s}_server.log" 2>&1 < /dev/null &
       pid=$!
       echo "${name}：启动中（进程 ${pid}）"
       ;;
@@ -125,6 +158,7 @@ stop_one() {
   if [ -f "$pidf" ]; then
     pid="$(cat "$pidf")"
     # 确认这个进程号确实是我们的服务再动手，避免进程号被别的程序复用
+    # （tts_server.py 也能匹配 breeze_tts_server.py，两个说话模型都认）
     if ps -p "$pid" -o command= 2>/dev/null | grep -q "${s}_server.py"; then
       kill "$pid" 2>/dev/null
       sleep 2
@@ -136,18 +170,42 @@ stop_one() {
 }
 
 status_one() {
-  local out
+  local out name
   out="$(health "$1")"
+  name="$(svc_name "$1")"
   if [ -z "$out" ]; then
-    echo "$(svc_name "$1")：未运行"
+    [ "$1" = tts ] && name="${name}（选的是 $(engine_label "$(engine)")）"
+    echo "${name}：未运行"
   else
-    echo "$(svc_name "$1")：$(echo "$out" | grep -o '"status":"[a-z]*"' | head -1 | cut -d'"' -f4)  $out"
+    [ "$1" = tts ] && name="${name}（$(engine_label "$(running_engine)")）"
+    echo "${name}：$(echo "$out" | grep -o '"status":"[a-z]*"' | head -1 | cut -d'"' -f4)  $out"
   fi
 }
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+set_engine() {
+  local new="$1" old running
+  old="$(engine)"
+  case "$new" in
+    "") echo "说话模型：$(engine_label "$old")（${old}）。切换：engine index 或 engine breeze"; return 0 ;;
+    index | breeze) ;;
+    *) echo "不认识的模型：${new}（只能是 index 或 breeze）"; return 2 ;;
+  esac
+  echo "$new" > "$ENGINE_FILE"
+  echo "说话模型：$(engine_label "$old") → $(engine_label "$new")"
+  running="$(running_engine)"
+  if [ -n "$running" ] && [ "$running" != "$new" ]; then
+    echo "说话服务正开着，重启成新模型："
+    stop_one tts
+    start_one tts
+  else
+    echo "下次说话服务启动时生效（插件需要时会自动拉起）"
+  fi
+}
+
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
 
 cmd="${1:-status}"
+if [ "$cmd" = engine ]; then set_engine "$2"; exit $?; fi
 target="${2:-all}"
 case "$target" in
   tts | sing | musicdl) list="$target" ;;

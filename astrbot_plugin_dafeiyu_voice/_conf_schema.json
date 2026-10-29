@@ -1,0 +1,201 @@
+﻿{
+  "voice_enable": {
+    "description": "启用语音回复",
+    "type": "bool",
+    "default": true,
+    "hint": "总开关。单个群可以用 /语音 开、/语音 关 单独控制。"
+  },
+  "voice_probability": {
+    "description": "随机发语音的概率",
+    "type": "float",
+    "default": 0,
+    "slider": {
+      "min": 0,
+      "max": 1,
+      "step": 0.05
+    },
+    "hint": "没人要求语音时，每条大模型回复有这么大的概率转成语音。方案定的是 0.3；装好先设 0，等按群规则配好再调。单个群可以用 /语音 概率 0.5 覆盖。"
+  },
+  "force_keywords": {
+    "description": "必发语音的关键词",
+    "type": "list",
+    "default": [
+      "语音",
+      "说给我听",
+      "用声音说",
+      "发语音"
+    ],
+    "hint": "对方消息里含这些词时，这条回复一定发语音（仍受长度和每分钟上限限制）。"
+  },
+  "voice_hint_chars": {
+    "description": "点名要语音时，让大模型控制在几个字以内",
+    "type": "int",
+    "default": 30,
+    "hint": "说得越短，语音来得越快（大约 1 个字要合成 0.6 秒）。"
+  },
+  "max_voice_chars": {
+    "description": "超过多少字就发文字",
+    "type": "int",
+    "default": 60,
+    "hint": "只算会念出来的字（不算颜文字、标点）。"
+  },
+  "force_max_chars": {
+    "description": "点名要语音时的字数上限",
+    "type": "int",
+    "default": 120,
+    "hint": "对方明确要语音时放宽到这个字数；再长也发文字，免得等太久。"
+  },
+  "voice_per_minute": {
+    "description": "每个群每分钟最多几条语音回复",
+    "type": "int",
+    "default": 3
+  },
+  "dual_output": {
+    "description": "语音和文字一起发",
+    "type": "bool",
+    "default": false
+  },
+  "sentence_max_chars": {
+    "description": "单句最长字数",
+    "type": "int",
+    "default": 40,
+    "hint": "超过就按逗号再切开，分成几条语音。"
+  },
+  "sing_cooldown_seconds": {
+    "description": "同一个人点歌的冷却时间（秒）",
+    "type": "int",
+    "default": 120,
+    "hint": "管理员不受限制。"
+  },
+  "sing_per_hour": {
+    "description": "每个群每小时最多唱几首",
+    "type": "int",
+    "default": 10
+  },
+  "sing_duration": {
+    "description": "清唱片段长度（秒）",
+    "type": "int",
+    "default": 30,
+    "hint": "30 秒的片段大约要做 3 分钟；最长 60。"
+  },
+  "learn_enable": {
+    "description": "点到没学过的歌时去学",
+    "type": "bool",
+    "default": false,
+    "hint": "通过本机的 go-music-dl（要保持运行）从 12 个源搜索下载：网易云、QQ音乐、酷狗、酷我、咪咕、千千、汽水音乐、JOOX、Apple Music、B站、5sing、Jamendo。各平台需要在 go-music-dl 里登录或填 Cookie，VIP 歌曲还需要对应会员；只学会员能下的整首，试听片段、翻唱、伴奏都不要。要带歌手名才学。没学成的歌都会记进 想学的歌.txt。"
+  },
+  "learn_admin_only": {
+    "description": "只有管理员能让她学新歌",
+    "type": "bool",
+    "default": false,
+    "hint": "打开后，群友只能点已经学会的歌。也可以用 /学歌 仅管理员、/学歌 所有人 切换。"
+  },
+  "learn_daily_limit": {
+    "description": "每天最多学几首新歌",
+    "type": "int",
+    "default": 5,
+    "hint": "所有群加起来。学失败的也算一次。"
+  },
+  "sing_start_tip": {
+    "description": "开唱前先发的话",
+    "type": "string",
+    "default": "咳咳，开嗓了~"
+  },
+  "refuse_texts": {
+    "description": "唱不了时的回复",
+    "type": "object",
+    "items": {
+      "too_high": {
+        "description": "原唱太高",
+        "type": "string",
+        "default": "呜…这首太高啦，我的鲸鱼嗓子够不着(｡•́︿•̀｡) 换一首嘛"
+      },
+      "too_low": {
+        "description": "原唱太低（多半是男声歌）",
+        "type": "string",
+        "default": "哼，男生的歌我才不唱呢，换一首嘛"
+      },
+      "not_found": {
+        "description": "歌单里没有",
+        "type": "string",
+        "default": "这首我还没学过呢，已经记在小本本上了~ 想让主人教我的话，带歌手名发 /唱 歌名 歌手；也可以先 /歌单 看看我会唱什么"
+      },
+      "blacklisted": {
+        "description": "在黑名单里",
+        "type": "string",
+        "default": "这首我唱不好，不唱啦，换一首嘛"
+      },
+      "busy": {
+        "description": "排队满了",
+        "type": "string",
+        "default": "前面还有好几首在排队呢，我嗓子都快冒烟啦，等会儿再点嘛"
+      },
+      "cooldown": {
+        "description": "个人冷却中（{wait} 会换成剩余秒数）",
+        "type": "string",
+        "default": "你刚点过歌啦，让我歇 {wait} 秒嘛"
+      },
+      "hourly": {
+        "description": "本群这小时唱太多了",
+        "type": "string",
+        "default": "这一个小时唱太多啦，嗓子要休息一下下"
+      },
+      "service": {
+        "description": "唱歌服务打不开",
+        "type": "string",
+        "default": "我的麦克风好像没插好…等会儿再试试"
+      },
+      "disabled": {
+        "description": "本群关闭了唱歌",
+        "type": "string",
+        "default": "这里是认真学习的地方，我就不唱歌啦~"
+      },
+      "learn_failed": {
+        "description": "学新歌没学成",
+        "type": "string",
+        "default": "我去找了一圈，没找到能学的原唱版本…先记在小本本上啦（可能要会员/Cookie 或没有版权），换一首嘛（记得带上歌手名哦）"
+      },
+      "learn_blocked": {
+        "description": "暂时不能学歌",
+        "type": "string",
+        "default": "现在学不了新歌…这首先记在小本本上，等主人教我~"
+      },
+      "learn_limit": {
+        "description": "今天学歌到上限了",
+        "type": "string",
+        "default": "今天已经学了好多新歌啦，脑袋装不下了，明天再教我嘛"
+      },
+      "error": {
+        "description": "做的过程中出错",
+        "type": "string",
+        "default": "呜…唱到一半卡住了，没唱出来"
+      }
+    }
+  },
+  "tts_url": {
+    "description": "说话服务地址",
+    "type": "string",
+    "default": "http://127.0.0.1:9880"
+  },
+  "sing_url": {
+    "description": "唱歌服务地址",
+    "type": "string",
+    "default": "http://127.0.0.1:9881"
+  },
+  "auto_start": {
+    "description": "服务没开时自动拉起",
+    "type": "bool",
+    "default": true
+  },
+  "control_script": {
+    "description": "启停脚本",
+    "type": "string",
+    "default": "~/dafeiyu-tools/dafeiyu-voice.sh"
+  },
+  "song_library": {
+    "description": "歌曲库目录",
+    "type": "string",
+    "default": "~/dafeiyu-tools/歌曲库",
+    "hint": "要和唱歌服务用的是同一个目录。"
+  }
+}

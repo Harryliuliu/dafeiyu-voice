@@ -1,0 +1,28 @@
+# 模型、工具仓库（各自有自己的 git，体积大）
+mlx-indextts/
+seed-vc/
+# 歌曲、音频、音色（版权与声音主人隐私，不公开不上传）
+歌曲库/
+voices/
+cache/
+backups/
+logs/
+run/
+*.wav
+*.m4a
+*.mp3
+*.flac
+*.ncm
+*.npz
+*.pt
+*.safetensors
+# 运行产物与凭证
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+*.pid
+*.bak
+.env
+*cookie*
+*token*

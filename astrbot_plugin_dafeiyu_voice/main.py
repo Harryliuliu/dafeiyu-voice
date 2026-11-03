@@ -575,7 +575,10 @@ class DafeiyuVoice(Star):
             await self._wish(song, artist)
         status = resp.get("status")
         if status == "done":
-            return  # 后台马上发
+            # 后台马上发。这里不回话，要显式停掉事件，否则 AstrBot 会把“/唱 xx”再交给大模型，
+            # 大模型又调一次 sing_song，结果唱两遍
+            event.stop_event()
+            return
         if status in ("queued", "running") and resp.get("learning"):
             yield event.plain_result(f"这首我还没学过，先去学一下~ 大概 {self._eta_text(resp)}后开唱")
             return

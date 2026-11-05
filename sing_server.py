@@ -53,7 +53,8 @@ def parse_args():
     p.add_argument("--host", default=env("DAFEIYU_SING_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(env("DAFEIYU_SING_PORT", "9881")))
     p.add_argument("--library", default=env("DAFEIYU_SING_LIBRARY", str(TOOLS / "歌曲库")))
-    p.add_argument("--ref", default=env("DAFEIYU_SING_REF", str(TOOLS / "voices" / "歌声参考_23秒.wav")))
+    # 2026-11-05 换成新音色（雨爱 75.2 秒起 23 秒，用户在 A/B/C 里选了 B）；原来的是 voices/歌声参考_23秒.wav
+    p.add_argument("--ref", default=env("DAFEIYU_SING_REF", str(TOOLS / "voices" / "歌声参考_雨爱_23秒.wav")))
     # 用户试听选了“参考 23 秒 + 40 步”：长音气息更稳；参考缩到 12 秒能快 2.5 倍但有轻微电音
     p.add_argument("--ref-seconds", type=float, default=float(env("DAFEIYU_SING_REF_SECONDS", "25")))
     p.add_argument("--diffusion-steps", type=int, default=int(env("DAFEIYU_SING_STEPS", "40")))
@@ -66,11 +67,16 @@ def parse_args():
     p.add_argument("--default-duration", type=float, default=30.0)
     p.add_argument("--max-duration", type=float, default=60.0)
     p.add_argument("--cache-max-gb", type=float, default=2.0)
-    # 挑歌阈值（原唱人声中位音高，Hz）：范围内直接唱；偏高一点降 3 个半音；其余拒绝
+    # 挑歌阈值（原唱人声中位音高，Hz）：范围内直接唱；偏高一点降 3 个半音；
+    # 再高或再低：默认升降调拉到她的音域硬唱（任务里带 stretch，插件先说一句可能唱不好），--no-stretch 时拒绝
     p.add_argument("--ok-low", type=float, default=280)
     p.add_argument("--ok-high", type=float, default=370)
     p.add_argument("--shift-high", type=float, default=430)
     p.add_argument("--shift-semitones", type=int, default=-3)
+    p.add_argument("--no-stretch", action="store_true",
+                   default=os.environ.get("DAFEIYU_SING_STRETCH", "1") == "0",
+                   help="超出音域的歌直接拒绝（默认会升降调试着唱）")
+    p.add_argument("--max-shift", type=int, default=12, help="硬唱时最多升降几个半音")
     p.add_argument("--no-caffeinate", action="store_true")
     return p.parse_args()
 
@@ -81,6 +87,18 @@ CACHE = LIB / "缓存"
 SEP_CACHE = CACHE / "分离"
 RUN_DIR = TOOLS / "run"
 PID_FILE = RUN_DIR / "sing_server.pid"
+
+
+def voice_tag(ref: str) -> str:
+    """缓存文件名里的音色标记：换了参考歌声，旧音色唱的缓存就不会被拿出来。
+    原来那段参考不加标记，换回去时它以前的缓存还能用。"""
+    if Path(ref).name == "歌声参考_23秒.wav":
+        return ""
+    import hashlib
+    return "_" + hashlib.md5(Path(ref).read_bytes()).hexdigest()[:6]
+
+
+VOICE_TAG = ""  # main() 里按 --ref 算好
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [唱歌服务] %(message)s", datefmt="%m-%d %H:%M:%S")
 log = logging.getLogger("sing_server")
@@ -294,7 +312,7 @@ def new_job(stem, kind, path, start, duration, key):
     JOBS[jid] = {
         "job_id": jid, "song": stem, "source": kind, "status": "queued", "stage": "排队",
         "start": start, "duration": duration, "reason": "", "message": "",
-        "file": "", "semitone": None, "pitch": None,
+        "file": "", "semitone": None, "pitch": None, "stretch": None,
         "created": time.time(), "started": None, "finished": None,
         "_path": str(path), "_key": key,
     }
@@ -322,7 +340,7 @@ def fail(job, reason, message):
 def cache_name(stem, start, duration):
     start_txt = "auto" if start is None else f"{start:.1f}"
     safe = re.sub(r'[\\/:*?"<>|]', "_", stem)
-    setting = f"r{ARGS.ref_seconds:g}s{ARGS.diffusion_steps}"  # 换了转换设置，旧缓存自动不用
+    setting = f"r{ARGS.ref_seconds:g}s{ARGS.diffusion_steps}{VOICE_TAG}"  # 换了转换设置或音色，旧缓存自动不用
     return f"{safe}@{start_txt}+{duration:.0f}_v{CACHE_VERSION}{setting}.wav"
 
 
@@ -336,28 +354,36 @@ def known_start(stem):
     return None
 
 
+def toward_ref(med):
+    """把中位音高 med 拉到参考歌声中位音高附近要升降几个半音。"""
+    import math
+    s = round(12 * math.log2(ENGINE.ref_median_hz / med))
+    return max(-ARGS.max_shift, min(ARGS.max_shift, s))
+
+
 def decide_semitone(stem, pitch):
-    """返回 (半音, None) 或 (None, (原因, 说明))。"""
+    """返回 (半音, None, 硬唱原因或 None) 或 (None, (原因, 说明), None)。"""
     wl = list_key(stem, read_list("白名单.txt"))
     if wl and wl[1]:
         try:
-            return int(wl[1]), None
+            return int(wl[1]), None, None
         except ValueError:
             pass
     med = pitch["median_hz"]
     if pitch["voiced_ratio"] < 0.2 or med <= 0:
-        return None, ("no_vocals", "这一段几乎没有人声")
+        return None, ("no_vocals", "这一段几乎没有人声"), None
     if ARGS.ok_low <= med <= ARGS.ok_high:
-        return 0, None
+        return 0, None, None
     if ARGS.ok_high < med <= ARGS.shift_high:
-        return ARGS.shift_semitones, None
+        return ARGS.shift_semitones, None, None
     if wl:  # 白名单但音高超出范围：照唱，靠近她的音域
-        import math
-        s = round(12 * math.log2(ENGINE.ref_median_hz / med))
-        return max(-12, min(12, s)), None
-    if med > ARGS.shift_high:
-        return None, ("too_high", f"原唱太高了（中位音高约 {med:.0f} Hz），她的嗓子够不着")
-    return None, ("too_low", f"原唱太低了（中位音高约 {med:.0f} Hz），像是男声歌，她唱不出味道")
+        return toward_ref(med), None, None
+    kind = "too_high" if med > ARGS.shift_high else "too_low"
+    if not ARGS.no_stretch:
+        return toward_ref(med), None, kind
+    if kind == "too_high":
+        return None, ("too_high", f"原唱太高了（中位音高约 {med:.0f} Hz），她的嗓子够不着"), None
+    return None, ("too_low", f"原唱太低了（中位音高约 {med:.0f} Hz），像是男声歌，她唱不出味道"), None
 
 
 def learn_step(job) -> bool:
@@ -452,10 +478,13 @@ def run_job(job):
         job["stage"] = "检查难度"
         pitch = ENGINE.pitch_stats(vocals)
         job["pitch"] = {k: round(v, 2 if k == "voiced_ratio" else 0) for k, v in pitch.items()}
-        semitone, problem = decide_semitone(stem, pitch)
+        semitone, problem, stretch = decide_semitone(stem, pitch)
         if problem:
             return fail(job, *problem)
         job["semitone"] = semitone
+        if stretch:  # 插件轮询时看到就先说一句“有点高/低，可能唱不好”
+            job["stretch"] = stretch
+            log.info("硬唱｜%s｜%s，中位 %.0f Hz，升降 %+d", stem, stretch, pitch["median_hz"], semitone)
 
         job["stage"] = "转换"
         out = finish(ENGINE.convert(vocals, semitone))
@@ -467,7 +496,7 @@ def run_job(job):
         os.replace(tmp, dest)
         (dest.with_suffix(".json")).write_text(json.dumps(
             {"song": stem, "source": kind, "start": job["start"], "duration": dur,
-             "semitone": semitone, "pitch": job["pitch"]}, ensure_ascii=False))
+             "semitone": semitone, "pitch": job["pitch"], "stretch": stretch}, ensure_ascii=False))
         prune_cache()
         elapsed = time.time() - t0
         STATE.avg_job_seconds = 0.7 * STATE.avg_job_seconds + 0.3 * elapsed
@@ -758,6 +787,7 @@ def build_app():
             "avg_job_seconds": round(STATE.avg_job_seconds),
             "uptime_seconds": int(time.time() - STATE.started),
             "library": str(LIB), "diffusion_steps": ARGS.diffusion_steps, "ref_seconds": ARGS.ref_seconds,
+            "stretch": not ARGS.no_stretch, "ref": Path(ARGS.ref).name,
         }
 
     @app.post("/admin/clear_cache")
@@ -795,6 +825,8 @@ def main():
 
     if not Path(ARGS.ref).exists():
         sys.exit(f"找不到参考歌声：{ARGS.ref}")
+    global VOICE_TAG
+    VOICE_TAG = voice_tag(ARGS.ref)
     with socket.socket() as s:
         if s.connect_ex((ARGS.host, ARGS.port)) == 0:
             sys.exit(f"端口 {ARGS.port} 已被占用：唱歌服务可能已经在运行")

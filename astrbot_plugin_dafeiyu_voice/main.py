@@ -430,7 +430,22 @@ class DafeiyuVoice(Star):
                 f"（{mmss(c.get('duration'))}），是这首吗？回「是」我就去学（大概 6 分钟），回「不是」就先不学")
 
     async def _deliver(self, umo: str, job: dict):
-        """后台：等唱歌服务做完，发“开嗓”提示和清唱；做不了就发拒绝的话。"""
+        """后台：等唱歌服务做完，发“开嗓”提示和清唱；做不了就发拒绝的话。
+        原唱太高/太低时服务会升降调硬唱（job 里带 stretch），一看到就先说一句可能唱不好。"""
+        warned = False
+
+        async def warn_stretch():
+            nonlocal warned
+            if warned or job.get("stretch") not in ("too_high", "too_low"):
+                return
+            warned = True
+            if job["stretch"] == "too_high":
+                tip = self.cfg("stretch_tip_high", "这首对我来说有点高…我降个调试试，可能唱得不太好，别笑我呀(｡•́︿•̀｡)")
+            else:
+                tip = self.cfg("stretch_tip_low", "这首调子好低，像是男生的歌…我升个调试试，可能唱得不太像，别嫌弃呀(*/ω＼*)")
+            if tip:
+                await self.context.send_message(umo, MessageChain(chain=[Comp.Plain(tip)]))
+
         try:
             deadline = time.monotonic() + 30 * 60
             misses = 0
@@ -448,6 +463,8 @@ class DafeiyuVoice(Star):
                         raise RuntimeError("唱歌服务没有响应")
                 if time.monotonic() > deadline:
                     raise RuntimeError("等太久了")
+                if job.get("status") != "done":  # 做完那一轮留到开嗓前再说，免得两句挤在一起
+                    await warn_stretch()
             if job["status"] == "failed":
                 logger.info(f"[大肥鱼声音] 唱不了 {job.get('song')}：{job.get('message')}")
                 text = self.refuse(job.get("reason", "error"))
@@ -455,6 +472,9 @@ class DafeiyuVoice(Star):
                     text += f"\n（《{song_title(job.get('song', ''))}》学下来发现唱不了，已经把它删掉啦，不占地方）"
                 await self.context.send_message(umo, MessageChain(chain=[Comp.Plain(text)]))
                 return
+            if not warned and job.get("stretch"):
+                await warn_stretch()
+                await asyncio.sleep(1.5)
             tip = self.cfg("sing_start_tip", "咳咳，开嗓了~")
             if tip:
                 await self.context.send_message(umo, MessageChain(chain=[Comp.Plain(tip)]))
@@ -506,7 +526,7 @@ class DafeiyuVoice(Star):
             return f"《{song_name}》之前唱过，马上就会发出去。用一句话告诉对方马上开唱，不要把歌词打出来。"
         if status in ("queued", "running") and resp.get("learning"):
             return (f"《{song_name}》还没学过，已经开始现学，大约 {self._eta_text(resp)}后自动发出清唱"
-                    "（学的时候可能发现太高唱不了，到时会另外说）。用一句话告诉对方你要先去练一下、让对方等等，不要把歌词打出来。")
+                    "（学下来如果发现原唱太高或太低，会升降调试着唱，到时会先说一声）。用一句话告诉对方你要先去练一下、让对方等等，不要把歌词打出来。")
         if status in ("queued", "running"):
             return (f"已经开始准备《{song_name}》，大约 {self._eta_text(resp)}后自动发出清唱。"
                     "用一句话让对方稍等，不要把歌词打出来。")

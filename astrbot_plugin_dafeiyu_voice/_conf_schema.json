@@ -101,6 +101,17 @@
     "type": "string",
     "default": "咳咳，开嗓了~"
   },
+  "stretch_tip_high": {
+    "description": "原唱太高、降调硬唱时先说的话",
+    "type": "string",
+    "default": "这首对我来说有点高…我降个调试试，可能唱得不太好，别笑我呀(｡•́︿•̀｡)",
+    "hint": "唱歌服务默认不再拒绝太高/太低的歌，而是升降调去唱；留空就不提前说。"
+  },
+  "stretch_tip_low": {
+    "description": "原唱太低、升调硬唱时先说的话",
+    "type": "string",
+    "default": "这首调子好低，像是男生的歌…我升个调试试，可能唱得不太像，别嫌弃呀(*/ω＼*)"
+  },
   "refuse_texts": {
     "description": "唱不了时的回复",
     "type": "object",

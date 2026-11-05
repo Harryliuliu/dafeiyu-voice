@@ -1,0 +1,39 @@
+{
+  "refs": {
+    "A_暖暖_23秒": {
+      "median_hz": 402
+    },
+    "B_雨爱_23秒": {
+      "median_hz": 371
+    },
+    "C_暖暖加雨爱_23秒": {
+      "median_hz": 392
+    }
+  },
+  "songs": {
+    "See You Again_A_暖暖_23秒.wav": {
+      "seconds": 163,
+      "finite": true
+    },
+    "唯一_A_暖暖_23秒.wav": {
+      "seconds": 181,
+      "finite": true
+    },
+    "See You Again_B_雨爱_23秒.wav": {
+      "seconds": 168,
+      "finite": true
+    },
+    "唯一_B_雨爱_23秒.wav": {
+      "seconds": 162,
+      "finite": true
+    },
+    "See You Again_C_暖暖加雨爱_23秒.wav": {
+      "seconds": 158,
+      "finite": true
+    },
+    "唯一_C_暖暖加雨爱_23秒.wav": {
+      "seconds": 164,
+      "finite": true
+    }
+  }
+}

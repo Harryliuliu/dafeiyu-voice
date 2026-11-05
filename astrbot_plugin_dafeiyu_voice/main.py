@@ -79,6 +79,16 @@ def song_artist(stem: str) -> str:
     return stem.partition("-")[0] if "-" in stem else ""
 
 
+def norm_name(s: str) -> str:
+    """和唱歌服务的 norm 一样：去掉空格和标点、转小写，用来比歌名。"""
+    return re.sub(r"[\s\-_·・.,，。!！?？'\"“”‘’()（）\[\]【】《》<>]+", "", s or "").lower()
+
+
+def cache_prefix(stem: str) -> str:
+    """唱歌服务缓存文件名的开头：“歌手-歌名@起点+时长_...wav”。"""
+    return re.sub(r'[\\/:*?"<>|]', "_", stem) + "@"
+
+
 def mmss(seconds) -> str:
     s = int(seconds or 0)
     return f"{s // 60} 分 {s % 60:02d} 秒" if s else "时长未知"
@@ -321,14 +331,16 @@ class DafeiyuVoice(Star):
     def library(self) -> Path:
         return Path(self.cfg("song_library") or "~/dafeiyu-tools/歌曲库").expanduser()
 
-    def local_songs(self) -> list:
-        """歌曲库里的歌（去掉黑名单），不需要开唱歌服务。"""
+    def local_songs(self, include_blacklisted: bool = False) -> list:
+        """歌曲库里的歌（默认去掉黑名单），不需要开唱歌服务。"""
         lib = self.library()
         stems = set()
         for kind in ("清唱", "原曲"):
             d = lib / kind
             if d.is_dir():
                 stems.update(f.stem for f in d.iterdir() if f.suffix.lower() in AUDIO_EXT and not f.name.startswith("."))
+        if include_blacklisted:
+            return sorted(stems)
         black = set()
         bl = lib / "黑名单.txt"
         if bl.exists():
@@ -642,7 +654,7 @@ class DafeiyuVoice(Star):
 
     @filter.command_group("唱歌")
     def sing_group(self):
-        """唱歌相关：状态、音色、清缓存、拉黑"""
+        """唱歌相关：状态、音色、片段、清缓存、拉黑"""
 
     @sing_group.command("状态")
     async def sing_status(self, event: AstrMessageEvent):
@@ -719,7 +731,25 @@ class DafeiyuVoice(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @sing_group.command("清缓存")
     async def sing_clear(self, event: AstrMessageEvent):
-        """清掉做好的清唱缓存（管理员）"""
+        """清掉做好的清唱缓存（管理员）：/唱歌 清缓存 清全部；/唱歌 清缓存 歌名 只清这一首"""
+        name = re.sub(r"^\S+\s+清缓存\s*", "", re.sub(r"\s+", " ", event.get_message_str().strip()))
+        if name:
+            stem, hint = self._pick_song(name)
+            if not stem:
+                yield event.plain_result(hint)
+                return
+            prefix = cache_prefix(stem)
+            n = 0
+            for f in (self.library() / "缓存").iterdir():
+                if f.name.startswith(prefix) and f.suffix in (".wav", ".json"):
+                    f.unlink(missing_ok=True)
+                    n += 1
+            title = song_title(stem)
+            if n:
+                yield event.plain_result(f"清掉了《{title}》的 {(n + 1) // 2} 份清唱（新音色、原音色的都清了），下次点会重新唱")
+            else:
+                yield event.plain_result(f"《{title}》还没有做好的清唱，不用清")
+            return
         if await self.health("sing"):
             s = await self.http()
             async with s.post(f"{self.url('sing')}/admin/clear_cache", json={},
@@ -731,6 +761,58 @@ class DafeiyuVoice(Star):
                 f.unlink(missing_ok=True)
                 n += 1
         yield event.plain_result(f"清掉了 {n} 个缓存文件")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @sing_group.command("片段")
+    async def sing_segment(self, event: AstrMessageEvent):
+        """改某首歌默认唱哪一段（管理员）：/唱歌 片段 歌名 1:47；/唱歌 片段 歌名 自动；/唱歌 片段 歌名 看现在的"""
+        parts = re.sub(r"\s+", " ", event.get_message_str().strip()).split(" ")[2:]
+        start = None
+        if parts and (TIME_RE.match(parts[-1]) or parts[-1] in ("自动", "auto")):
+            start = parts.pop().replace("：", ":").rstrip("秒s")
+        if not parts:
+            yield event.plain_result("用法：/唱歌 片段 歌名 1:47（从 1 分 47 秒起唱）；/唱歌 片段 歌名 自动（挑人声最响的一段）")
+            return
+        stem, hint = self._pick_song(" ".join(parts))
+        if not stem:
+            yield event.plain_result(hint)
+            return
+        path = self.library() / "片段.txt"
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        key = (norm_name(stem), norm_name(song_title(stem)))
+        keep, old = [], None
+        for line in lines:
+            m = re.match(r"^(.+?)\s+(\d+[:：]\d+(?:\.\d+)?|\d+(?:\.\d+)?)$", line.strip())
+            if m and not line.strip().startswith("#") and norm_name(m.group(1)) in key:
+                old = m.group(2)
+                continue
+            keep.append(line)
+        title = song_title(stem)
+        if start is None:
+            now = f"从 {old} 开始唱" if old else "没指定，自动挑人声最响的一段"
+            yield event.plain_result(f"《{title}》现在{now}。改的话：/唱歌 片段 {title} 1:47")
+            return
+        if start not in ("自动", "auto"):
+            if ":" not in start:  # 片段.txt 要写成 1:47
+                start = f"{int(start) // 60}:{int(start) % 60:02d}"
+            keep.append(f"{stem} {start}")
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        tmp.replace(path)
+        now = f"从 {start} 开始唱" if start not in ("自动", "auto") else "自动挑人声最响的一段"
+        yield event.plain_result(f"好，《{title}》以后{now}（原来：{old or '自动'}）。"
+                                 "换了段落要重新唱一遍，第一次点会慢一点")
+
+    def _pick_song(self, name: str):
+        """按歌名（可带“歌手-”）在歌曲库里找一首，返回 (歌手-歌名, None) 或 (None, 提示)。"""
+        songs, q = self.local_songs(include_blacklisted=True), norm_name(name)
+        exact = [s for s in songs if q in (norm_name(s), norm_name(song_title(s)))]
+        hits = exact or [s for s in songs if q and q in norm_name(s)]
+        if len(hits) == 1:
+            return hits[0], None
+        if not hits:
+            return None, f"歌单里没找到《{name}》，发 /歌单 看看歌名"
+        return None, "有好几首对得上：" + "、".join(hits[:6]) + "，写全一点（可以带歌手，如 邓紫棋-唯一）"
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @sing_group.command("拉黑")

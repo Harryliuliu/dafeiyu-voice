@@ -52,6 +52,18 @@ def model_label(health: dict) -> str:
     return MODEL_NAMES.get(health.get("engine") or "index", "未知模型")
 
 
+# 唱歌音色二选一（dafeiyu-voice.sh voice 切换，记在 sing_voice.conf）
+VOICE_NAMES = {"new": "新音色·雨爱", "old": "原音色"}
+VOICE_FILES = {"歌声参考_雨爱_23秒.wav": "new", "歌声参考_23秒.wav": "old"}
+VOICE_ALIASES = {"新": "new", "新音色": "new", "雨爱": "new", "new": "new",
+                 "原来": "old", "原音色": "old", "原": "old", "旧": "old", "old": "old"}
+
+
+def voice_label(health: dict) -> str:
+    """从唱歌服务的 /health 看正在用哪个音色。"""
+    return VOICE_NAMES.get(VOICE_FILES.get(health.get("ref") or ""), "其他参考歌声")
+
+
 class SenderFilter(SessionFilter):
     """等回复时只认点歌的人本人（AstrBot 默认按整个群算，群里谁说“是”都会被当成答复）。"""
 
@@ -630,7 +642,7 @@ class DafeiyuVoice(Star):
 
     @filter.command_group("唱歌")
     def sing_group(self):
-        """唱歌相关：状态、清缓存、拉黑"""
+        """唱歌相关：状态、音色、清缓存、拉黑"""
 
     @sing_group.command("状态")
     async def sing_status(self, event: AstrMessageEvent):
@@ -645,7 +657,7 @@ class DafeiyuVoice(Star):
             return
         run = h.get("running")
         now = f"正在做《{run['song']}》（{run['stage']}）" if run else "现在空闲"
-        yield event.plain_result(f"{now}，还有 {h.get('queue', 0)} 首在排队{here}")
+        yield event.plain_result(f"{now}，还有 {h.get('queue', 0)} 首在排队，音色：{voice_label(h)}{here}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @sing_group.command("开")
@@ -660,6 +672,49 @@ class DafeiyuVoice(Star):
         """本群不唱歌（管理员）"""
         await self.save_chat_settings(event.unified_msg_origin, sing=False)
         yield event.plain_result("本群不唱歌了（语音回复另用 /语音 关）")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @sing_group.command("音色")
+    async def sing_voice(self, event: AstrMessageEvent, name: str = ""):
+        """看 / 切换唱歌的音色（管理员）：/唱歌 音色 原来 或 /唱歌 音色 新"""
+        key = VOICE_ALIASES.get(name.strip().lower())
+        if name.strip() and not key:
+            yield event.plain_result("只能选「原来」（原音色）或「新」（新音色·雨爱）")
+            return
+        script = Path(self.cfg("control_script") or "~/dafeiyu-tools/dafeiyu-voice.sh").expanduser()
+        if not key:
+            h = await self.health("sing")
+            now = f"正在用{voice_label(h)}" if h else "唱歌服务没开"
+            yield event.plain_result(f"唱歌音色选的是{VOICE_NAMES[self.selected_voice()]}（{now}）\n"
+                                     "切换：/唱歌 音色 原来 或 /唱歌 音色 新")
+            return
+        if key == self.selected_voice():
+            yield event.plain_result(f"唱歌本来就是{VOICE_NAMES[key]}")
+            return
+        yield event.plain_result(f"正在换成{VOICE_NAMES[key]}，唱歌服务开着的话要重启，稍等……")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "/bin/bash", str(script), "voice", key,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,  # 重启出来的服务和 AstrBot 分开
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            yield event.plain_result("切换等了 5 分钟还没好，用 /唱歌 状态 看看")
+            return
+        except OSError as e:
+            yield event.plain_result(f"启停脚本运行失败：{e}")
+            return
+        yield event.plain_result(out.decode(errors="ignore").strip() or "已切换")
+
+    def selected_voice(self) -> str:
+        """启停脚本记下的唱歌音色（new / old），没记就是 new。"""
+        script = Path(self.cfg("control_script") or "~/dafeiyu-tools/dafeiyu-voice.sh").expanduser()
+        try:
+            name = (script.parent / "sing_voice.conf").read_text().strip()
+        except OSError:
+            name = ""
+        return name if name in VOICE_NAMES else "new"
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @sing_group.command("清缓存")

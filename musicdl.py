@@ -132,13 +132,15 @@ class MusicDL:
             base_name = re.sub(r"[（(\[【].*?[)）\]】]", "", c["name"])
             if not nt or nt not in _norm(c["name"]):
                 continue
-            score = 10.0 + (4 if _norm(base_name) == nt else 0)
+            # 点的就是带版本的（“雨爱(司风版)”）时，整个歌名一样也算完全对上
+            score = 10.0 + (4 if nt in (_norm(base_name), _norm(c["name"])) else 0)
             if na and na not in _norm(c["artist"]):
                 continue  # 网易云上同名翻唱很多，歌手对不上就不要
             low = c["name"].lower()
             note = re.findall(r"[（(\[【](.*?)[)）\]】]", c["name"])
-            if any(not any(_has(w, n.lower()) for w in ("live", "现场") if _has(w, asked)) for n in note):
-                score -= 6  # 括号里写着“氛围版”“女声版”之类的，多半不是原版
+            if any(_norm(n) not in nt and not any(_has(w, n.lower()) for w in ("live", "现场") if _has(w, asked))
+                   for n in note):
+                score -= 6  # 括号里写着“氛围版”“女声版”之类、点歌时又没提的，多半不是原版
             score -= 10 * sum(1 for w in BAD_WORDS if _has(w, low) and not _has(w, asked))
             if c["duration"] and c["duration"] < 90:
                 score -= 10

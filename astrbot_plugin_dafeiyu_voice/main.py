@@ -22,6 +22,7 @@ import aiohttp
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
+from astrbot.api.event.filter import CustomFilter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.core.agent.message import TextPart
@@ -62,6 +63,16 @@ VOICE_ALIASES = {"新": "new", "新音色": "new", "雨爱": "new", "new": "new"
 def voice_label(health: dict) -> str:
     """从唱歌服务的 /health 看正在用哪个音色。"""
     return VOICE_NAMES.get(VOICE_FILES.get(health.get("ref") or ""), "其他参考歌声")
+
+
+class LearnCmdFilter(CustomFilter):
+    """“/学歌 歌名 [歌手] [起点]”：AstrBot 不会把指令组下没注册的子命令交给插件（会落到大模型），
+    所以单独接；要求带唤醒词（/ 或 @），并排除 /学歌 自己的子命令。"""
+
+    PATTERN = re.compile(r"^学歌\s+(?!(?:所有人|仅管理员|关|想学|状态)\s*$)\S")
+
+    def filter(self, event: AstrMessageEvent, cfg) -> bool:
+        return event.is_at_or_wake_command and bool(self.PATTERN.search(event.get_message_str().strip()))
 
 
 class SenderFilter(SessionFilter):
@@ -519,30 +530,37 @@ class DafeiyuVoice(Star):
         return f"{max(1, round(secs / 60))} 分钟"
 
     @filter.llm_tool(name="sing_song")
-    async def sing_song(self, event: AstrMessageEvent, song_name: str, artist: str = "", confirmed=False) -> str:
-        """让大肥鱼用自己的声音清唱一段歌。有人让你唱歌、点歌时调用。调用后立刻返回，清唱做好后会自动发到群里。
+    async def sing_song(self, event: AstrMessageEvent, song_name: str, artist: str = "", start: str = "",
+                        confirmed=False) -> str:
+        """让大肥鱼用自己的声音清唱一段歌。有人让你唱歌、点歌、让你学一首歌时调用。调用后立刻返回，清唱做好后会自动发到群里。
         工具可能先让你向对方确认歌名或版本；对方确认后再调用一次并带 confirmed=true。
 
         Args:
-            song_name(string): 歌名，只写歌名本身，不要书名号
-            artist(string): 原唱歌手；不确定就留空
+            song_name(string): 歌名，不要书名号；对方说了版本（如“司风版”“Live 版”）就原样写进歌名，例如 雨爱(司风版)
+            artist(string): 对方说的歌手或翻唱者；没说就留空
+            start(string): 对方说了从哪开始唱就填，如 0:15 或 1:47；没说就留空
             confirmed(boolean): 只有对方已经明确确认“就是这首”之后才填 true；第一次调用不要填
         """
         name = song_name.strip("《》 ")
+        start = (start or "").strip().replace("：", ":").rstrip("秒s") or None
+        if start and not TIME_RE.match(start):
+            start = None  # 看不懂的起点就不传，免得唱歌服务直接报错
+        same = "song_name、artist、start 都不变"
         confirmed = str(confirmed).strip().lower() in ("true", "1", "yes", "是")
-        resp = await self._request_song(event, name, artist or "", learn=self._can_learn(event),
+        resp = await self._request_song(event, name, artist or "", start, learn=self._can_learn(event),
                                         suggest=not confirmed, confirmed=confirmed)
         if resp.get("reason") == "did_you_mean":
             near = resp["suggestions"][0]
             t, a = song_title(near), song_artist(near)
-            return (f"歌单里没有《{name}》，但有很像的《{t}》（{a or '歌手未知'}），对方可能打错或记错了。"
-                    f"先用一句话问对方是不是想听《{t}》，现在不要说已经开唱。对方说是，就用 song_name=“{t}”、artist=“{a}” 再调用；"
-                    f"对方说就是要《{name}》，再调用时 song_name 不变并带 confirmed=true。")
+            return (f"歌单里没有{artist + '的' if artist else ''}《{name}》，但有很像的《{t}》（{a or '歌手未知'}），"
+                    f"可能是同一首，也可能是对方想要的另一个版本。"
+                    f"先用一句话问对方是不是想听《{t}》（{a or '歌手未知'}），现在不要说已经开唱。对方说是，就用 song_name=“{t}”、artist=“{a}” 再调用；"
+                    f"对方说就是要《{name}》，再调用时{same}，并带 confirmed=true。")
         if resp.get("status") == "confirm":
             c = resp.get("candidate") or {}
             return (f"《{name}》还没学过。准备学的版本是{resp.get('source_name', '')}的《{c.get('name')}》- {c.get('artist')}"
                     f"（{mmss(c.get('duration'))}），学一首大约 6 分钟。先用一句话问对方是不是这首，现在不要说已经在学；"
-                    f"对方确认后再调用 sing_song，song_name、artist 不变，并带 confirmed=true。")
+                    f"对方确认后再调用 sing_song，{same}，并带 confirmed=true。")
         if resp.get("reason") == "not_found":
             await self._wish(song_name.strip("《》 "), artist or "")
         status = resp.get("status")
@@ -587,12 +605,40 @@ class DafeiyuVoice(Star):
             resp = await self._request_song(event, " ".join(parts[:-1]), parts[-1], start, suggest=False)
         if resp.get("reason") == "not_found":  # 再问一次，这次让服务找歌单里只差一两个字的歌
             resp = await self._request_song(event, song, artist, start)
+        async for r in self._sing_flow(event, song, artist, start, resp):
+            yield r
 
-        if resp.get("reason") == "did_you_mean":  # 多半是打错了：先问是不是歌单里那首
+    @filter.custom_filter(LearnCmdFilter, False)
+    async def learn_cmd(self, event: AstrMessageEvent):
+        """学一首歌（按学歌设置决定谁能用）：/学歌 歌名 [歌手] [起点如 0:15]"""
+        parts = re.sub(r"\s+", " ", event.get_message_str().strip()).split(" ")[1:]
+        start = None
+        if parts and TIME_RE.match(parts[-1]):
+            start = parts.pop().replace("：", ":").rstrip("秒s")
+        if not parts:
+            yield event.plain_result("用法：/学歌 歌名 歌手 起点，比如 /学歌 雨爱(司风版) 时年先生 0:15")
+            return
+        if not self._can_learn(event):
+            yield event.plain_result("现在不能让我学新歌（看 /学歌 状态）；库里有的歌直接 /唱 歌名 就行")
+            return
+        # 写法固定：最后一段是歌手（只写一段就是歌名）；“歌手-歌名”也认
+        song, artist = " ".join(parts), ""
+        if len(parts) >= 2:
+            song, artist = " ".join(parts[:-1]), parts[-1]
+        elif "-" in song:
+            artist, _, song = song.partition("-")
+        resp = await self._request_song(event, song, artist, start)
+        async for r in self._sing_flow(event, song, artist, start, resp):
+            yield r
+
+    async def _sing_flow(self, event: AstrMessageEvent, song: str, artist: str, start, resp: dict):
+        """点歌的后半段：歌单里有相近的先问“是不是这首”，没有就（能学的话）确认版本后去学，最后回话。"""
+        if resp.get("reason") == "did_you_mean":  # 打错字，或者库里只有别人唱的同名歌：先问是不是歌单里那首
             near = resp["suggestions"][0]
             who = f"（{song_artist(near)}）" if song_artist(near) else ""
             then = "我再去找这首学" if self._can_learn(event) else "我把它记进想学清单"
-            ok = await self._ask_yes_no(event, f"歌单里没有《{song}》，你是想听《{song_title(near)}》{who}吗？"
+            mine = f"{artist}的" if artist else ""
+            ok = await self._ask_yes_no(event, f"歌单里没有{mine}《{song}》，你是想听《{song_title(near)}》{who}吗？"
                                                f"回「是」我就唱这首，回「不是」{then}")
             if ok is None:
                 yield event.plain_result("好久没等到回复，那先不唱啦~")

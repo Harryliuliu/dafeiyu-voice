@@ -188,11 +188,18 @@ def library_songs():
     return songs
 
 
+# 歌名里的版本说明：“雨爱(司风版)”“xx Live”是另一首，不能拿库里的原版顶替
+VERSION_RE = re.compile(r"[（(【\[][^)）】\]]*[)）】\]]|版|live|remix|cover|翻唱|伴奏|dj", re.I)
+
+
 def find_song(song: str, artist: str = ""):
-    """返回 (歌手-歌名, 种类, 路径)；先精确匹配歌名，再包含匹配；同名优先清唱。"""
+    """返回 (歌手-歌名, 种类, 路径)；先精确匹配歌名，再包含匹配；同名优先清唱。
+    写了歌手就必须对得上（对不上算没有，点歌时由 similar_songs 去问“是不是库里那首”）；
+    没写歌手、点的歌名又带版本说明而库里的没有时，不算包含匹配。"""
     q_title, q_artist = norm(song), norm(artist)
     if not q_title:
         return None
+    q_version = bool(VERSION_RE.search(song))
     exact, fuzzy = [], []
     for stem, kinds in library_songs().items():
         a, t = split_stem(stem)
@@ -201,13 +208,14 @@ def find_song(song: str, artist: str = ""):
             continue
         if nt == q_title or norm(stem) == q_title:
             exact.append((stem, kinds))
-        elif len(q_title) >= 2 and (q_title in nt or (len(nt) >= 2 and nt in q_title)):
+        elif len(q_title) >= 2 and q_title in nt:
+            fuzzy.append((stem, kinds))
+        elif len(nt) >= 2 and nt in q_title and not (q_version and not q_artist and not VERSION_RE.search(t)):
+            # 写了歌手且对得上时，学来的“时年先生-雨爱”就是点的“雨爱(司风版)”（入库时去掉了括号）
             fuzzy.append((stem, kinds))
     for stem, kinds in exact + fuzzy:
         kind = "清唱" if "清唱" in kinds else "原曲"
         return stem, kind, kinds[kind]
-    if q_artist:  # 歌手写法对不上（如 G.E.M. / 邓紫棋）时只按歌名找
-        return find_song(song)
     return None
 
 

@@ -6,13 +6,12 @@
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh stop    [tts|sing|all]   停止
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh restart [tts|sing|all]
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh status  [tts|sing|musicdl|all]
-#   bash ~/dafeiyu-tools/dafeiyu-voice.sh engine  [index|breeze]       看 / 切换说话用的模型
+#   bash ~/dafeiyu-tools/dafeiyu-voice.sh engine  [breeze]             看说话用的模型
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh voice   [old|new]            看 / 切换唱歌用的音色
 #
-# tts = 说话服务（127.0.0.1:9880，闲置 15 分钟自动退出）。两个模型二选一，占同一个端口：
-#       index  = IndexTTS2（默认，情绪更强烈）
-#       breeze = Breeze TTS 2（声音更好听；仅限非商业用途）
-#       切换时说话服务正开着就自动重启成新模型；唱歌不受影响。
+# tts = 说话服务（127.0.0.1:9880，闲置 15 分钟自动退出），现在只有一个模型：
+#       breeze = Breeze TTS 2（芙宁娜参考；仅限非商业用途）
+#       IndexTTS2 已于 2026-11-10 卸载（tts_server.py 留着备查），engine index 会提示已卸载。
 # sing = 唱歌服务（127.0.0.1:9881，闲置 5 分钟自动退出）。音色二选一：
 #       new = 新音色（voices/歌声参考_雨爱_23秒.wav，默认）
 #       old = 原音色（voices/歌声参考_23秒.wav）
@@ -29,13 +28,10 @@ RUN="$TOOLS/run"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 mkdir -p "$LOG" "$RUN"
 
-# 说话用哪个模型，记在这个文件里（index / breeze），没有就是 index
+# 说话用哪个模型，记在这个文件里。IndexTTS2 卸载后只剩 breeze，文件里写什么都按 breeze
+# （以后再加模型时在这里和 set_engine 里加）
 ENGINE_FILE="$TOOLS/tts_engine.conf"
-engine() {
-  local e
-  [ -f "$ENGINE_FILE" ] && e="$(tr -d ' \t\r\n' < "$ENGINE_FILE")"
-  case "$e" in breeze) echo breeze ;; *) echo index ;; esac
-}
+engine() { echo breeze; }
 engine_label() { case "$1" in breeze) echo "Breeze TTS 2" ;; *) echo "IndexTTS2" ;; esac; }
 running_engine() {  # 正在跑的说话服务是哪个模型；没在跑就输出空
   local h
@@ -66,14 +62,13 @@ running_voice() {  # 正在跑的唱歌服务用的哪个音色；没在跑就�
 
 svc_py() {
   case "$1" in
-    tts) if [ "$(engine)" = breeze ]; then echo "$TOOLS/breeze-test/.venv/bin/python"
-         else echo "$TOOLS/mlx-indextts/.venv/bin/python"; fi ;;
+    tts) echo "$TOOLS/breeze-test/.venv/bin/python" ;;
     sing) echo "$TOOLS/seed-vc/.venv/bin/python" ;;
   esac
 }
 svc_script() {
   case "$1" in
-    tts) if [ "$(engine)" = breeze ]; then echo "$TOOLS/breeze_tts_server.py"; else echo "$TOOLS/tts_server.py"; fi ;;
+    tts) echo "$TOOLS/breeze_tts_server.py" ;;
     *) echo "$TOOLS/${1}_server.py" ;;
   esac
 }
@@ -220,9 +215,10 @@ set_engine() {
   local new="$1" old running
   old="$(engine)"
   case "$new" in
-    "") echo "说话模型：$(engine_label "$old")（${old}）。切换：engine index 或 engine breeze"; return 0 ;;
-    index | breeze) ;;
-    *) echo "不认识的模型：${new}（只能是 index 或 breeze）"; return 2 ;;
+    "") echo "说话模型：$(engine_label "$old")（${old}，芙宁娜音色）。IndexTTS2 已卸载，现在没有别的可切"; return 0 ;;
+    index) echo "IndexTTS2 已经卸载了（2026-11-10），说话现在只用 Breeze TTS 2（芙宁娜音色），没有切换"; return 2 ;;
+    breeze) ;;
+    *) echo "不认识的模型：${new}（现在只有 breeze）"; return 2 ;;
   esac
   echo "$new" > "$ENGINE_FILE"
   echo "说话模型：$(engine_label "$old") → $(engine_label "$new")"
@@ -256,7 +252,7 @@ set_voice() {
   fi
 }
 
-usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
 
 cmd="${1:-status}"
 if [ "$cmd" = engine ]; then set_engine "$2"; exit $?; fi

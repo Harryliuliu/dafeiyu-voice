@@ -15,6 +15,8 @@ BRACKET_RE = re.compile(r"（[^（）]{0,80}）|\([^()]{0,80}\)|【[^【】]{0,8
 DISALLOWED_RE = re.compile(r"[^一-鿿㐀-䶿A-Za-z0-9\s，。！？、；：,.!?;:%+\-—'\"“”‘’~…]")
 PUNCT = "，。！？、；：,.!?;:—'\"“”‘’"
 DASH_RE = re.compile(r"[—–─－]+|-{2,}")  # 各种破折号（单个 - 不算，免得把 3-5 这类数字范围改掉）
+# 破折号念成“省略号 + 换行”：说话服务在换行处把句子分两段合成，中间插固定长度的停顿（默认 0.8 秒）
+DASH_PAUSE = "……\n"
 # 省略号不算句子结束：“那……我喜欢你”要连着念，不然“那”会被切到上一句的末尾（2026-11-10）
 SENTENCE_RE = re.compile(r".*?[。？！?!~\n]+|.+$", re.S)
 SPOKEN_RE = re.compile(r"[一-鿿㐀-䶿A-Za-z0-9]")
@@ -48,16 +50,18 @@ def _pre_clean(text: str) -> str:
 
 
 def clean_for_tts(text: str) -> str:
-    # 2026-11-10 实测 Breeze：破折号几乎不停（0.09 秒），省略号“……”停得最明显（0.85 秒），逗号 0.5 秒。
-    # 所以破折号换成省略号，省略号原样留给 Breeze（以前换成逗号，停顿就没了）。
-    t = DASH_RE.sub("…", _pre_clean(text))
+    # 2026-11-10 实测 Breeze：破折号几乎不停（0.09 秒），省略号停 0.3–0.85 秒不稳定。
+    # 所以省略号原样留给 Breeze（以前换成逗号，停顿就没了）；破折号换成 DASH_PAUSE，由说话服务保证停够。
+    t = DASH_RE.sub("—", _pre_clean(text))  # 各种破折号先统一成一个 —
     t = DISALLOWED_RE.sub("", t)
     t = re.sub(r"~+", "，", t)  # ~ 只用来断句，不念
     t = re.sub(rf"(?<=[{CJK}])\s+(?=[{CJK}])", "，", t)  # 汉字之间的空格（多半是删掉颜文字留下的）当停顿
     t = re.sub(r"\s+", " ", t)
-    t = re.sub(rf"\s*([{re.escape(PUNCT)}])[{re.escape(PUNCT)}\s]*", r"\1", t)  # 连续标点只留第一个
-    t = re.sub(rf"[{re.escape(PUNCT)}\s]*…+[{re.escape(PUNCT)}\s]*", "……", t)  # 省略号统一成“……”，前后的标点去掉
-    return t.strip(PUNCT + " …")
+    p = re.escape(PUNCT.replace("—", ""))
+    t = re.sub(rf"\s*([{p}])[{p}\s]*", r"\1", t)  # 连续标点只留第一个
+    t = re.sub(rf"[{p}\s]*…+[{p}\s]*", "……", t)  # 省略号统一成“……”，前后的标点去掉
+    t = re.sub(rf"[{p}\s…]*—[{p}\s…—]*", DASH_PAUSE, t)  # 破折号（连同旁边的标点）→ 固定停顿
+    return t.strip(PUNCT + " …\n")
 
 
 def _split_long(s: str, max_len: int) -> list:

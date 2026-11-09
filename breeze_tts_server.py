@@ -38,9 +38,10 @@ from loudness import level_loudness
 TOOLS = Path.home() / "dafeiyu-tools"
 BREEZE_ROOT = TOOLS / "breeze-test"
 SAMPLE_RATE = 24000
-CACHE_VERSION = "2"  # 改动合成方式时加一，旧缓存自动失效（2：前后加留白和淡出）
+CACHE_VERSION = "3"  # 改动合成方式时加一，旧缓存自动失效（2：前后加留白和淡出；3：换行处固定停顿）
 # 前后留白：QQ 播放时开头结尾容易被吃掉一点，Breeze 有时最后一个字刚出口就结束，听着像被掐断
 LEAD_SILENCE, TAIL_SILENCE, FADE_OUT = 0.12, 0.35, 0.03  # 秒
+DASH_PAUSE = float(os.environ.get("DAFEIYU_DASH_PAUSE", "0.8"))  # 破折号（插件传来的换行）处的停顿长度，秒
 
 # 2026-11-09 起默认参考换成芙宁娜（游戏语音，正常说话），不再需要“别唱”。
 # 旧的大肥鱼参考（参考片段1，是唱的）若用 --ref-audio 换回去，记得把 KEEP 加回“用自然说话的方式（不要唱），”
@@ -183,12 +184,26 @@ def _synth(text, instruct, temperature, seed, out_path: Path) -> float:
     if MODEL is None:
         raise RuntimeError(f"模型没有加载成功：{STATE.error}")
     t = time.perf_counter()
-    chunks = [
-        np.array(r.audio, dtype=np.float32)
-        for r in MODEL.generate(text=text, instruct=instruct, ref_audio=ARGS.ref_audio, ref_text=REF_TEXT,
-                                cfg_scale=ARGS.cfg_scale, temperature=temperature, seed=seed)
-    ]
+    # 文字里的换行 = 插件把破折号变成的“硬停顿”：Breeze 按换行分段合成，段与段之间插一段静音。
+    # （实测 Breeze 对破折号几乎不停，对“……”停 0.3–0.85 秒不稳定，插静音才能保证停够。）
+    segs, last = [], None
+    for r in MODEL.generate(text=text, instruct=instruct, ref_audio=ARGS.ref_audio, ref_text=REF_TEXT,
+                            cfg_scale=ARGS.cfg_scale, temperature=temperature, seed=seed, split_pattern="\n"):
+        seg = getattr(r, "segment_idx", 0)
+        a = np.array(r.audio, dtype=np.float32)
+        if segs and seg == last:
+            segs[-1] = np.concatenate([segs[-1], a])
+        else:
+            segs.append(a)
+        last = seg
     mx.clear_cache()
+    chunks = []
+    for i, a in enumerate(segs):
+        if len(segs) > 1:  # 衔接处先去掉各段自带的长短不一的空白，再插固定长度的停顿
+            a = _trim_edges(a, start=i > 0, end=i < len(segs) - 1)
+        if chunks:
+            chunks.append(np.zeros(int(SAMPLE_RATE * DASH_PAUSE), np.float32))
+        chunks.append(a)
     audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
     if not ARGS.no_level:
         audio = level_loudness(audio, SAMPLE_RATE)
@@ -204,6 +219,27 @@ def _synth(text, instruct, temperature, seed, out_path: Path) -> float:
     sf.write(str(tmp), audio, SAMPLE_RATE, subtype="PCM_16", format="WAV")
     os.replace(tmp, out_path)
     return time.perf_counter() - t
+
+
+def _trim_edges(a, start: bool, end: bool, margin: float = 0.04):
+    """去掉一段音频开头/结尾的空白（留 40 毫秒），结尾淡出 20 毫秒防止咔哒声。"""
+    import numpy as np
+
+    fr = int(SAMPLE_RATE * 0.01)
+    if a.size < fr * 3:
+        return a
+    rms = np.sqrt(np.mean(a[: a.size // fr * fr].reshape(-1, fr) ** 2, axis=1))
+    voiced = np.where(rms > rms.max() * 0.03)[0]
+    if voiced.size == 0:
+        return a
+    m = int(margin * SAMPLE_RATE)
+    lo = max(0, voiced[0] * fr - m) if start else 0
+    hi = min(a.size, (voiced[-1] + 1) * fr + m) if end else a.size
+    a = a[lo:hi].copy()
+    if end:
+        k = min(int(SAMPLE_RATE * 0.02), a.size)
+        a[-k:] *= np.linspace(1.0, 0.0, k, dtype=np.float32)
+    return a
 
 
 def _prune_cache():

@@ -40,16 +40,22 @@ BREEZE_ROOT = TOOLS / "breeze-test"
 SAMPLE_RATE = 24000
 CACHE_VERSION = "1"  # 改动合成方式时加一，旧缓存自动失效
 
-# 参考片段是唱的，所以每条指令都先要求“正常说话、别唱”
-KEEP = "保持参考音频的音色，用自然说话的方式（不要唱），"
-# 标签 → 语气指令。来自 2026-10-29 的 A/B 试听：委屈、惊讶、开心、平静用户满意，傲娇、害羞待调。
+# 2026-11-09 起默认参考换成芙宁娜（游戏语音，正常说话），不再需要“别唱”。
+# 旧的大肥鱼参考（参考片段1，是唱的）若用 --ref-audio 换回去，记得把 KEEP 加回“用自然说话的方式（不要唱），”
+KEEP = "保持参考音频的音色，"
+# 标签 → 语气指令（字符串，或多条时按文字固定挑一条）。来自 2026-10-29 的 A/B 试听：委屈、惊讶、开心、平静用户满意；
+# 2026-11-09 芙宁娜参考试听：害羞原指令太柔，换成 A 嘴硬 / B 戏剧化 / C 慌乱 三条轮换（用户都满意）。
 # 试听版在开心句前加了 [笑]、委屈句前加了 [叹气]；插件按句合成，每句都加会反复笑/叹气，所以这里不加。
 EMOTIONS = {
     "开心": "开心雀跃的语气，声音明亮，语速稍快，带着笑意。",
     "傲娇": "嘴硬心软的傲娇语气：表面不耐烦、有点别扭，其实心里很高兴，尾音略带撒娇。",
     "委屈": "委屈的语气，声音低落、带一点哭腔，像忍着眼泪小声抱怨。",
     "平静": "平静温和的语气，语速平稳，放松自然。",
-    "害羞": "害羞的语气，声音轻柔、有点迟疑和结巴，像是脸红了不好意思。",
+    "害羞": [
+        "害羞但嘴硬的语气，像大小姐被说中心事时强装镇定，声音清亮、稍微提高，语速略快，带点慌乱和结巴，不要压低声音。",
+        "戏剧化的害羞：一开始慌张结巴，后半句假装生气地抱怨，声音明亮有力，尾音带一点撒娇。",
+        "被夸得手足无措的语气，又急又羞，声音偏高、带点颤，语速快，像在努力掩饰脸红。",
+    ],
     "惊讶": "非常惊讶的语气，语调明显上扬，带着难以置信的感觉。",
 }
 ALIASES = {
@@ -68,7 +74,7 @@ def parse_args():
     p.add_argument("--host", default=env("DAFEIYU_TTS_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(env("DAFEIYU_TTS_PORT", "9880")))
     p.add_argument("--model", default=env("DAFEIYU_BREEZE_MODEL", str(BREEZE_ROOT / "models" / "Breeze-TTS-2-mlx")))
-    p.add_argument("--ref-audio", default=env("DAFEIYU_BREEZE_REF", str(TOOLS / "voices" / "参考片段1.wav")))
+    p.add_argument("--ref-audio", default=env("DAFEIYU_BREEZE_REF", str(TOOLS / "voices" / "芙宁娜_参考.wav")))
     p.add_argument("--ref-text", default=None, help="参考音频的逐字稿；默认读同名 .txt")
     p.add_argument("--cache-dir", default=env("DAFEIYU_BREEZE_CACHE", str(TOOLS / "cache" / "tts_breeze")))
     p.add_argument("--cache-max-mb", type=int, default=int(env("DAFEIYU_TTS_CACHE_MB", "300")))
@@ -138,7 +144,11 @@ def resolve(text: str, emotion: Optional[str]):
     if e.lower() in NO_EMOTION:
         return text, "none", None
     if e in EMOTIONS:
-        return text, e, KEEP + EMOTIONS[e]
+        ins = EMOTIONS[e]
+        if isinstance(ins, list):
+            # 同一句话每次一样（缓存有效），不同句子有变化
+            ins = ins[int(hashlib.md5(text.encode()).hexdigest(), 16) % len(ins)]
+        return text, e, KEEP + ins
     if VECTOR_RE.match(e.lower()):
         raise ValueError(f"Breeze 不认识 IndexTTS2 的情绪写法：{e}。可用：{'/'.join(EMOTIONS)}、auto、none，或一句中文语气描述")
     return text, "自定义", KEEP + e

@@ -38,7 +38,9 @@ from loudness import level_loudness
 TOOLS = Path.home() / "dafeiyu-tools"
 BREEZE_ROOT = TOOLS / "breeze-test"
 SAMPLE_RATE = 24000
-CACHE_VERSION = "1"  # 改动合成方式时加一，旧缓存自动失效
+CACHE_VERSION = "2"  # 改动合成方式时加一，旧缓存自动失效（2：前后加留白和淡出）
+# 前后留白：QQ 播放时开头结尾容易被吃掉一点，Breeze 有时最后一个字刚出口就结束，听着像被掐断
+LEAD_SILENCE, TAIL_SILENCE, FADE_OUT = 0.12, 0.35, 0.03  # 秒
 
 # 2026-11-09 起默认参考换成芙宁娜（游戏语音，正常说话），不再需要“别唱”。
 # 旧的大肥鱼参考（参考片段1，是唱的）若用 --ref-audio 换回去，记得把 KEEP 加回“用自然说话的方式（不要唱），”
@@ -46,15 +48,16 @@ KEEP = "保持参考音频的音色，"
 # 标签 → 语气指令（字符串，或多条时按文字固定挑一条）。来自 2026-10-29 的 A/B 试听：委屈、惊讶、开心、平静用户满意；
 # 2026-11-09 芙宁娜参考试听：害羞原指令太柔，换成 A 嘴硬 / B 戏剧化 / C 慌乱 三条轮换（用户都满意）。
 # 试听版在开心句前加了 [笑]、委屈句前加了 [叹气]；插件按句合成，每句都加会反复笑/叹气，所以这里不加。
+# 2026-11-10：群聊里最常用开心、害羞，实测 5.0–5.7 字/秒偏快（原声 4.1），去掉这两类里的“语速快”字样。
 EMOTIONS = {
-    "开心": "开心雀跃的语气，声音明亮，语速稍快，带着笑意。",
+    "开心": "开心雀跃的语气，声音明亮，带着笑意。",
     "傲娇": "嘴硬心软的傲娇语气：表面不耐烦、有点别扭，其实心里很高兴，尾音略带撒娇。",
     "委屈": "委屈的语气，声音低落、带一点哭腔，像忍着眼泪小声抱怨。",
     "平静": "平静温和的语气，语速平稳，放松自然。",
     "害羞": [
-        "害羞但嘴硬的语气，像大小姐被说中心事时强装镇定，声音清亮、稍微提高，语速略快，带点慌乱和结巴，不要压低声音。",
+        "害羞但嘴硬的语气，像大小姐被说中心事时强装镇定，声音清亮、稍微提高，带点慌乱和结巴，不要压低声音。",
         "戏剧化的害羞：一开始慌张结巴，后半句假装生气地抱怨，声音明亮有力，尾音带一点撒娇。",
-        "被夸得手足无措的语气，又急又羞，声音偏高、带点颤，语速快，像在努力掩饰脸红。",
+        "被夸得手足无措的语气，又急又羞，声音偏高、带点颤，像在努力掩饰脸红。",
     ],
     "惊讶": "非常惊讶的语气，语调明显上扬，带着难以置信的感觉。",
 }
@@ -192,6 +195,11 @@ def _synth(text, instruct, temperature, seed, out_path: Path) -> float:
     peak = float(np.max(np.abs(audio))) if audio.size else 0.0
     if peak > 0.99:
         audio *= 0.99 / peak
+    n = min(int(SAMPLE_RATE * FADE_OUT), audio.size)
+    if n:
+        audio[-n:] *= np.linspace(1.0, 0.0, n, dtype=np.float32)
+    audio = np.concatenate([np.zeros(int(SAMPLE_RATE * LEAD_SILENCE), np.float32), audio.astype(np.float32),
+                            np.zeros(int(SAMPLE_RATE * TAIL_SILENCE), np.float32)])
     tmp = out_path.with_suffix(".tmp")
     sf.write(str(tmp), audio, SAMPLE_RATE, subtype="PCM_16", format="WAV")
     os.replace(tmp, out_path)

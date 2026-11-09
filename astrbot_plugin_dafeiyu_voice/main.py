@@ -29,15 +29,17 @@ from astrbot.core.agent.message import TextPart
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 from astrbot.core.utils.session_waiter import SessionController, SessionFilter, session_waiter
 
-from .textproc import clean_for_tts, extract_tag, has_keyword, spoken_len, split_sentences, strip_tags
+from .textproc import clean_for_tts, extract_tag, has_keyword, spoken_len, strip_tags, voice_chunks
 
 EMOTION_EXTRA = "dafeiyu_emotion"
 MAX_SENTENCES = 6  # 说话服务最多同时排 6 句
 TIME_RE = re.compile(r"^\d{1,2}[:：]\d{1,2}$|^\d+(?:秒|s)?$")
-# 对方点名要语音时，只在这一轮告诉大模型：不然它会照常识回答“我不会发语音”，再被念出来
+# 对方点名要语音时，只在这一轮告诉大模型：不然它会照常识回答“我不会发语音”，再被念出来。
+# 2026-11-10：不再写死“一两句、30 字以内”（会和人格里的长度规则打架、让模型敷衍对方的要求），
+# 长短交给人格；voice_hint_chars 设成大于 0 时才加字数提示。
 VOICE_HINT = ("（系统提示，不要复述：你这条回复会自动用你自己的声音念出来，以语音发给对方。"
               "直接说你想说的话，不要说自己不会或不能发语音，也不要提语音条、文字转语音这些。"
-              "这次只说一两句，{n} 个字以内。）")
+              "对方点名要你说的内容就照着说完整；不要写动作描写和括号旁白。{limit}）")
 AUDIO_EXT = {".wav", ".m4a", ".mp3", ".flac", ".aac", ".ogg"}
 YES_RE = re.compile(r"^(是|是的|对|对的|对呀|对啊|嗯|嗯嗯|好|好的|行|可以|没错|就是|就这首|yes|y|ok)[!！~。.呀啊的]*$", re.I)
 NO_RE = re.compile(r"^(不是|不对|不|不要|否|算了|取消|没|no|n)[!！~。.呀啊的]*$", re.I)
@@ -269,7 +271,7 @@ class DafeiyuVoice(Star):
 
     @filter.on_llm_request()
     async def tell_llm_it_speaks(self, event: AstrMessageEvent, req: ProviderRequest):
-        """对方要语音时，告诉大模型这条会被念出来、说短一点。只在本轮生效，不写进聊天记录。"""
+        """对方要语音时，告诉大模型这条会被念出来。只在本轮生效，不写进聊天记录。"""
         if not self.cfg("voice_enable", True):
             return
         if not has_keyword(event.get_message_str(), self.cfg("force_keywords", []) or []):
@@ -277,8 +279,9 @@ class DafeiyuVoice(Star):
         umo = event.unified_msg_origin
         if not (await self.chat_settings(umo)).get("voice", True) or not self._voice_rate_ok(umo):
             return
-        n = int(self.cfg("voice_hint_chars", 30))
-        req.extra_user_content_parts.append(TextPart(text=VOICE_HINT.format(n=n)).mark_as_temp())
+        n = int(self.cfg("voice_hint_chars", 0) or 0)
+        limit = f"这次控制在 {n} 个字左右。" if n > 0 else ""
+        req.extra_user_content_parts.append(TextPart(text=VOICE_HINT.format(limit=limit)).mark_as_temp())
 
     @filter.on_decorating_result(priority=100)
     async def strip_emotion_tag(self, event: AstrMessageEvent):
@@ -324,7 +327,8 @@ class DafeiyuVoice(Star):
                 return
             if not self._voice_rate_ok(umo):
                 return
-            sentences = split_sentences(text, max_len=int(self.cfg("sentence_max_chars", 40)))
+            # 整段合成一条语音，超过 sentence_max_chars 才在句子之间拆成几条（以前是一句一条）
+            sentences = voice_chunks(text, max_len=int(self.cfg("sentence_max_chars", 120)))
             if not sentences or len(sentences) > MAX_SENTENCES:
                 return
             if not await self.ensure("tts"):

@@ -9,11 +9,13 @@ TAG_RE = re.compile(rf"[【\[]\s*(?:语气\s*[:：]\s*)?({_LABELS})\s*[】\]]")
 
 URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.I)
 # 括号里的动作描写和颜文字整个去掉：（甩尾）(摇尾巴)(｡･ω･｡) *伸懒腰*
-BRACKET_RE = re.compile(r"（[^（）]{0,30}）|\([^()]{0,30}\)|【[^【】]{0,30}】|\*[^*\n]{1,20}\*")
+# 2026-11-10：上限 30 → 80 字，角色扮演式的长动作描写也不念
+BRACKET_RE = re.compile(r"（[^（）]{0,80}）|\([^()]{0,80}\)|【[^【】]{0,80}】|\*[^*\n]{1,40}\*")
 # 只保留汉字、字母数字和常用标点，其余（emoji、颜文字零件、假名、韩文等）都删掉
 DISALLOWED_RE = re.compile(r"[^一-鿿㐀-䶿A-Za-z0-9\s，。！？、；：,.!?;:%+\-—'\"“”‘’~…]")
 PUNCT = "，。！？、；：,.!?;:—'\"“”‘’"
-SENTENCE_RE = re.compile(r".*?[。？！?!~…\n]+|.+$", re.S)
+# 省略号不算句子结束：“那……我喜欢你”要连着念，不然“那”会被切到上一句的末尾（2026-11-10）
+SENTENCE_RE = re.compile(r".*?[。？！?!~\n]+|.+$", re.S)
 SPOKEN_RE = re.compile(r"[一-鿿㐀-䶿A-Za-z0-9]")
 
 
@@ -93,6 +95,21 @@ def split_sentences(text: str, max_len: int = 40, merge_below: int = 8, merge_ma
         else:
             merged.append(s)
     return merged
+
+
+def voice_chunks(text: str, max_len: int = 120) -> list:
+    """一次回复要合成的几段：整段念成一条语音，超过 max_len 个字才在句子之间拆成几条（2026-11-10）。
+
+    以前一句一条语音，大模型回两句就收到两条很短的语音；整段一起合成，语气也更连贯。
+    """
+    chunks = []
+    for s in split_sentences(text, max_len=max_len):
+        if chunks and spoken_len(chunks[-1] + s) <= max_len:
+            sep = "" if chunks[-1][-1:] in PUNCT else "。"
+            chunks[-1] = chunks[-1] + sep + s
+        else:
+            chunks.append(s)
+    return chunks
 
 
 def has_keyword(message: str, keywords) -> bool:

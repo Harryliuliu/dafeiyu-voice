@@ -28,10 +28,10 @@
     "hint": "对方消息里含这些词时，这条回复一定发语音（仍受长度和每分钟上限限制）。"
   },
   "voice_hint_chars": {
-    "description": "点名要语音时，让大模型控制在几个字以内",
+    "description": "点名要语音时，让大模型控制在几个字以内（0 = 不提字数）",
     "type": "int",
-    "default": 30,
-    "hint": "说得越短，语音来得越快（大约 1 个字要合成 0.6 秒）。"
+    "default": 0,
+    "hint": "0 表示不额外提字数，长短交给人格决定。说得越短，语音来得越快（大约 1 个字要合成 0.3 秒）。"
   },
   "max_voice_chars": {
     "description": "超过多少字就发文字",
@@ -42,8 +42,8 @@
   "force_max_chars": {
     "description": "点名要语音时的字数上限",
     "type": "int",
-    "default": 120,
-    "hint": "对方明确要语音时放宽到这个字数；再长也发文字，免得等太久。"
+    "default": 300,
+    "hint": "对方明确要语音时，这个字数以内全部念出来（300 字约 70 秒语音、要合成一分多钟）；再长就只发文字，免得等太久、占住说话服务。"
   },
   "voice_per_minute": {
     "description": "每个群每分钟最多几条语音回复",
@@ -56,10 +56,10 @@
     "default": false
   },
   "sentence_max_chars": {
-    "description": "单句最长字数",
+    "description": "单条语音最长字数",
     "type": "int",
-    "default": 40,
-    "hint": "超过就按逗号再切开，分成几条语音。"
+    "default": 120,
+    "hint": "一次回复整段合成一条语音；超过这个字数才在句子之间拆成几条。Breeze 一次最多念约 60 秒，别超过 200。"
   },
   "sing_cooldown_seconds": {
     "description": "同一个人点歌的冷却时间（秒）",

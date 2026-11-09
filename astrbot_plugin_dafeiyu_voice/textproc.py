@@ -2,7 +2,8 @@
 
 import re
 
-EMOTION_LABELS = ("开心", "傲娇", "委屈", "害羞", "惊讶", "平静")
+# 2026-11-10 加【嘴硬】：芙宁娜的傲娇分成表层端架子（傲娇）和里层口是心非（嘴硬）
+EMOTION_LABELS = ("开心", "傲娇", "嘴硬", "委屈", "害羞", "惊讶", "平静")
 _LABELS = "|".join(EMOTION_LABELS)
 # 【开心】，也容忍 [开心]、【语气：开心】这类写法
 TAG_RE = re.compile(rf"[【\[]\s*(?:语气\s*[:：]\s*)?({_LABELS})\s*[】\]]")
@@ -17,6 +18,9 @@ PUNCT = "，。！？、；：,.!?;:—'\"“”‘’"
 DASH_RE = re.compile(r"[—–─－]+|-{2,}")  # 各种破折号（单个 - 不算，免得把 3-5 这类数字范围改掉）
 # 破折号念成“省略号 + 换行”：说话服务在换行处把句子分两段合成，中间插固定长度的停顿（默认 0.8 秒）
 DASH_PAUSE = "……\n"
+# 结巴“谁、谁”“你，你”：顿号 Breeze 几乎不停，换成制表符，说话服务在那里插短停顿（默认 0.35 秒，比破折号短）
+STUTTER_RE = re.compile(r"([一-鿿]{1,2})[、，,]\s*(?=\1)")
+STUTTER_PAUSE = "\t"
 # 省略号不算句子结束：“那……我喜欢你”要连着念，不然“那”会被切到上一句的末尾（2026-11-10）
 SENTENCE_RE = re.compile(r".*?[。？！?!~\n]+|.+$", re.S)
 SPOKEN_RE = re.compile(r"[一-鿿㐀-䶿A-Za-z0-9]")
@@ -61,7 +65,8 @@ def clean_for_tts(text: str) -> str:
     t = re.sub(rf"\s*([{p}])[{p}\s]*", r"\1", t)  # 连续标点只留第一个
     t = re.sub(rf"[{p}\s]*…+[{p}\s]*", "……", t)  # 省略号统一成“……”，前后的标点去掉
     t = re.sub(rf"[{p}\s…]*—[{p}\s…—]*", DASH_PAUSE, t)  # 破折号（连同旁边的标点）→ 固定停顿
-    return t.strip(PUNCT + " …\n")
+    t = STUTTER_RE.sub(lambda m: m.group(1) + STUTTER_PAUSE, t)  # 结巴 → 短停顿
+    return t.strip(PUNCT + " …\n\t")
 
 
 def _split_long(s: str, max_len: int) -> list:

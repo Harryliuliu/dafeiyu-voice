@@ -38,10 +38,12 @@ from loudness import level_loudness
 TOOLS = Path.home() / "dafeiyu-tools"
 BREEZE_ROOT = TOOLS / "breeze-test"
 SAMPLE_RATE = 24000
-CACHE_VERSION = "3"  # 改动合成方式时加一，旧缓存自动失效（2：前后加留白和淡出；3：换行处固定停顿）
+CACHE_VERSION = "4"  # 改动合成方式时加一，旧缓存自动失效（2：前后加留白和淡出；3：换行处固定停顿；4：制表符=结巴短停顿）
 # 前后留白：QQ 播放时开头结尾容易被吃掉一点，Breeze 有时最后一个字刚出口就结束，听着像被掐断
 LEAD_SILENCE, TAIL_SILENCE, FADE_OUT = 0.12, 0.35, 0.03  # 秒
 DASH_PAUSE = float(os.environ.get("DAFEIYU_DASH_PAUSE", "0.8"))  # 破折号（插件传来的换行）处的停顿长度，秒
+STUTTER_PAUSE = float(os.environ.get("DAFEIYU_STUTTER_PAUSE", "0.35"))  # 结巴“谁、谁”（插件传来的制表符）处，秒
+PAUSES = {"\n": DASH_PAUSE, "\t": STUTTER_PAUSE}
 
 # 2026-11-09 起默认参考换成芙宁娜（游戏语音，正常说话），不再需要“别唱”。
 # 旧的大肥鱼参考（参考片段1，是唱的）若用 --ref-audio 换回去，记得把 KEEP 加回“用自然说话的方式（不要唱），”
@@ -51,9 +53,12 @@ KEEP = "保持参考音频的音色，"
 # 试听版在开心句前加了 [笑]、委屈句前加了 [叹气]；插件按句合成，每句都加会反复笑/叹气，所以这里不加。
 # 2026-11-10：群聊里最常用开心、害羞，实测 5.0–5.7 字/秒偏快（原声 4.1），去掉这两类里的“语速快”字样。
 # 2026-11-10：用户最喜欢的「我喜欢你，这句听清了没有？」是带“语速略快”的 A 版，试听后 A 和 A 略快都保留（四条轮换）。
+# 2026-11-10：芙宁娜的傲娇分成两面（用户选的）：【傲娇】= 表层名伶端架子（自我介绍不再“不自信”），
+#             【嘴硬】= 里层少女口是心非（原来的傲娇说明）。由大模型按场景选标签。
 EMOTIONS = {
     "开心": "开心雀跃的语气，声音明亮，带着笑意。",
-    "傲娇": "嘴硬心软的傲娇语气：表面不耐烦、有点别扭，其实心里很高兴，尾音略带撒娇。",
+    "傲娇": "傲娇的大小姐语气：表面高傲、嘴上不饶人，语气笃定又带点得意，声音明亮，语调上扬，像在故意端架子，句尾干脆，不要软绵绵的。",
+    "嘴硬": "嘴硬心软的傲娇语气：表面不耐烦、有点别扭，其实心里很高兴，尾音略带撒娇。",
     "委屈": "委屈的语气，声音低落、带一点哭腔，像忍着眼泪小声抱怨。",
     "平静": "平静温和的语气，语速平稳，放松自然。",
     "害羞": [
@@ -66,7 +71,7 @@ EMOTIONS = {
 }
 ALIASES = {
     "happy": "开心", "tsundere": "傲娇", "sad": "委屈", "calm": "平静",
-    "shy": "害羞", "surprised": "惊讶", "surprise": "惊讶",
+    "shy": "害羞", "surprised": "惊讶", "surprise": "惊讶", "stubborn": "嘴硬",
 }
 NO_EMOTION = {"none", "无", "原声", "reference"}
 TAG_RE = re.compile(r"【([^】]{1,6})】")
@@ -186,11 +191,15 @@ def _synth(text, instruct, temperature, seed, out_path: Path) -> float:
     if MODEL is None:
         raise RuntimeError(f"模型没有加载成功：{STATE.error}")
     t = time.perf_counter()
-    # 文字里的换行 = 插件把破折号变成的“硬停顿”：Breeze 按换行分段合成，段与段之间插一段静音。
-    # （实测 Breeze 对破折号几乎不停，对“……”停 0.3–0.85 秒不稳定，插静音才能保证停够。）
+    # 文字里的换行 / 制表符 = 插件标出的“硬停顿”（破折号 / 结巴）：Breeze 按它们分段合成，段与段之间插固定长度的静音。
+    # （实测 Breeze 对破折号、顿号几乎不停，对“……”停 0.3–0.85 秒不稳定，插静音才能保证停够。）
+    seps = re.findall(r"[\n\t]", text)
+    pieces = [s for s in re.split(r"[\n\t]", text)]
+    if any(not p.strip() for p in pieces):  # 有空段时 Breeze 会跳过它，对不上号就都按破折号停
+        seps = []
     segs, last = [], None
     for r in MODEL.generate(text=text, instruct=instruct, ref_audio=ARGS.ref_audio, ref_text=REF_TEXT,
-                            cfg_scale=ARGS.cfg_scale, temperature=temperature, seed=seed, split_pattern="\n"):
+                            cfg_scale=ARGS.cfg_scale, temperature=temperature, seed=seed, split_pattern=r"[\n\t]"):
         seg = getattr(r, "segment_idx", 0)
         a = np.array(r.audio, dtype=np.float32)
         if segs and seg == last:
@@ -204,7 +213,8 @@ def _synth(text, instruct, temperature, seed, out_path: Path) -> float:
         if len(segs) > 1:  # 衔接处先去掉各段自带的长短不一的空白，再插固定长度的停顿
             a = _trim_edges(a, start=i > 0, end=i < len(segs) - 1)
         if chunks:
-            chunks.append(np.zeros(int(SAMPLE_RATE * DASH_PAUSE), np.float32))
+            pause = PAUSES.get(seps[i - 1], DASH_PAUSE) if len(seps) == len(segs) - 1 else DASH_PAUSE
+            chunks.append(np.zeros(int(SAMPLE_RATE * pause), np.float32))
         chunks.append(a)
     audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
     if not ARGS.no_level:

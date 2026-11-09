@@ -38,3 +38,6 @@ sing_voice.conf
 # 芙宁娜试验：模型包、音频不上传（furina_ab.py 留着）
 furina-test/download/
 furina-test/model/
+# GSV 试验：官方代码（自带 git）、芙宁娜语音包不上传
+GPT-SoVITS/
+furina-test/dataset/

@@ -1,0 +1,26 @@
+{
+ "开心": {
+  "wav": "/Users/no1vo/dafeiyu-tools/furina-test/dataset/芙宁娜/vo_dialog_EQHDJ304_furina_04.wav",
+  "text": "哈哈哈，跟你们聊天真开心，来翘英庄真是正确的选择。"
+ },
+ "傲娇": {
+  "wav": "/Users/no1vo/dafeiyu-tools/furina-test/dataset/芙宁娜/vo_furina_spice_normal_01.wav",
+  "text": "太「普通」了！哼，这种缺乏特色的料理得不到我的认可！"
+ },
+ "委屈": {
+  "wav": "/Users/no1vo/dafeiyu-tools/furina-test/dataset/芙宁娜/vo_FNNLQ002_2_furina_08.wav",
+  "text": "我曾经很害怕被人注视，尤其是被质疑被怨恨的时候。"
+ },
+ "害羞": {
+  "wav": "/Users/no1vo/dafeiyu-tools/furina-test/dataset/芙宁娜/vo_FNNLQ003_2_furina_02.wav",
+  "text": "你、你们看我干什么，不会指望我也加入战斗吧？"
+ },
+ "惊讶": {
+  "wav": "/Users/no1vo/dafeiyu-tools/furina-test/dataset/芙宁娜/vo_CLLQ002_11_furina_06b_1.wav",
+  "text": "啊？现…现在？这是唱歌的时候吗？"
+ },
+ "平静": {
+  "wav": "/Users/no1vo/dafeiyu-tools/furina-test/dataset/芙宁娜/vo_FNNLQ003_7_furina_10.wav",
+  "text": "这没什么遗憾的，无论台上台下，永远不会缺少闪光的演员与故事。"
+ }
+}

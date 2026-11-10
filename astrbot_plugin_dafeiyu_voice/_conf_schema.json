@@ -76,7 +76,7 @@
     "description": "清唱片段长度（秒）",
     "type": "int",
     "default": 30,
-    "hint": "30 秒的片段大约要做 3 分钟；最长 60。"
+    "hint": "30 秒的片段：芙宁娜唱不到 1 分钟就好，特邀嘉宾大肥鱼约 3.5 分钟；最长 60。"
   },
   "learn_enable": {
     "description": "点到没学过的歌时去学",
@@ -97,20 +97,36 @@
     "hint": "所有群加起来。学失败的也算一次。"
   },
   "sing_start_tip": {
-    "description": "开唱前先发的话",
+    "description": "芙宁娜自己唱时，开唱前先发的话",
     "type": "string",
-    "default": "咳咳，开嗓了~"
+    "default": "咳咳……各位观众，好戏开场！"
+  },
+  "guest_start_tip": {
+    "description": "特邀嘉宾大肥鱼唱时，开唱前先发的话",
+    "type": "string",
+    "default": "这首本大导演请来了特邀嘉宾大肥鱼，掌声欢迎！"
+  },
+  "ask_singer": {
+    "description": "点歌时先问对方想听谁唱",
+    "type": "bool",
+    "default": true,
+    "hint": "问：芙宁娜本人唱，还是特邀嘉宾大肥鱼唱。点歌时已经说了（如 /唱 泡沫 芙宁娜，或者跟她说“你唱”）就不问；60 秒没回答就用默认歌手（/唱歌 音色 改，默认大肥鱼）。关掉就不问，直接用默认歌手。"
+  },
+  "singer_question": {
+    "description": "问谁来唱时说的话（/唱 指令用；自然语言点歌时由大模型自己问）",
+    "type": "string",
+    "default": "这首想听本女士亲自献唱，还是请特邀嘉宾大肥鱼登台？回「芙宁娜」或「大肥鱼」就好"
   },
   "stretch_tip_high": {
     "description": "原唱太高、降调硬唱时先说的话",
     "type": "string",
-    "default": "这首对我来说有点高…我降个调试试，可能唱得不太好，别笑我呀(｡•́︿•̀｡)",
+    "default": "这首的调子起得有点高……得降个调来演绎，谁也不许笑场！",
     "hint": "唱歌服务默认不再拒绝太高/太低的歌，而是升降调去唱；留空就不提前说。"
   },
   "stretch_tip_low": {
     "description": "原唱太低、升调硬唱时先说的话",
     "type": "string",
-    "default": "这首调子好低，像是男生的歌…我升个调试试，可能唱得不太像，别嫌弃呀(*/ω＼*)"
+    "default": "这首调子低得像男声的戏份……升个调试试，唱得不像也要鼓掌哦"
   },
   "refuse_texts": {
     "description": "唱不了时的回复",
@@ -119,67 +135,67 @@
       "too_high": {
         "description": "原唱太高",
         "type": "string",
-        "default": "呜…这首太高啦，我的鲸鱼嗓子够不着(｡•́︿•̀｡) 换一首嘛"
+        "default": "呜……这首太高了，再唱下去本女士的嗓子就要提前谢幕了，换一首吧"
       },
       "too_low": {
         "description": "原唱太低（多半是男声歌）",
         "type": "string",
-        "default": "哼，男生的歌我才不唱呢，换一首嘛"
+        "default": "这么低沉的男声唱段，可配不上本女士的嗓音，换一首吧"
       },
       "not_found": {
         "description": "歌单里没有",
         "type": "string",
-        "default": "这首我还没学过呢，已经记在小本本上了~ 想让主人教我的话，带歌手名发 /唱 歌名 歌手；也可以先 /歌单 看看我会唱什么"
+        "default": "这首还不在本女士的剧目单上……已经记下了。想听的话带上歌手名发 /唱 歌名 歌手，也可以先发 /歌单 看看我会唱什么"
       },
       "blacklisted": {
         "description": "在黑名单里",
         "type": "string",
-        "default": "这首我唱不好，不唱啦，换一首嘛"
+        "default": "这首本女士唱不出满意的效果，不演了，换一首吧"
       },
       "busy": {
         "description": "排队满了",
         "type": "string",
-        "default": "前面还有好几首在排队呢，我嗓子都快冒烟啦，等会儿再点嘛"
+        "default": "后台还有好几首在排练呢，等会儿再点吧，本大导演也是要排队的"
       },
       "cooldown": {
         "description": "个人冷却中（{wait} 会换成剩余秒数）",
         "type": "string",
-        "default": "你刚点过歌啦，让我歇 {wait} 秒嘛"
+        "default": "你刚点过歌了，让本女士喝口茶歇 {wait} 秒"
       },
       "hourly": {
         "description": "本群这小时唱太多了",
         "type": "string",
-        "default": "这一个小时唱太多啦，嗓子要休息一下下"
+        "default": "这一个小时唱了太多场，本大导演的嗓子也要谢幕休息一会儿"
       },
       "service": {
         "description": "唱歌服务打不开",
         "type": "string",
-        "default": "我的麦克风好像没插好…等会儿再试试"
+        "default": "后台的音响好像出了点状况……等会儿再试试吧"
       },
       "disabled": {
         "description": "本群关闭了唱歌",
         "type": "string",
-        "default": "这里是认真学习的地方，我就不唱歌啦~"
+        "default": "这里是认真学习的地方，演出就先免了~"
       },
       "learn_failed": {
         "description": "学新歌没学成",
         "type": "string",
-        "default": "我去找了一圈，没找到能学的原唱版本…先记在小本本上啦（可能要会员/Cookie 或没有版权），换一首嘛（记得带上歌手名哦）"
+        "default": "我找了一圈，没找到能学的原唱版本……可能要会员或者没有版权，已经记下了。换一首吧，记得带上歌手名"
       },
       "learn_blocked": {
         "description": "暂时不能学歌",
         "type": "string",
-        "default": "现在学不了新歌…这首先记在小本本上，等主人教我~"
+        "default": "现在学不了新歌……这首先记进剧目单，等主人帮我排练"
       },
       "learn_limit": {
         "description": "今天学歌到上限了",
         "type": "string",
-        "default": "今天已经学了好多新歌啦，脑袋装不下了，明天再教我嘛"
+        "default": "今天排练了太多新剧目，脑袋都装不下了，明天再学吧"
       },
       "error": {
         "description": "做的过程中出错",
         "type": "string",
-        "default": "呜…唱到一半卡住了，没唱出来"
+        "default": "呜……唱到一半出了舞台事故，没唱成"
       }
     }
   },

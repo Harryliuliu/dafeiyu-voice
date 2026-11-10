@@ -1,0 +1,28 @@
+{
+  "settings": {
+    "index_rate": 0.5,
+    "volume_envelope": 1.0,
+    "protect": 0.33,
+    "f0_method": "rmvpe"
+  },
+  "songs": {
+    "1_唯一_芙宁娜_RVC.wav": {
+      "seconds": 11.0,
+      "semitone": 0,
+      "model_sr": 48000,
+      "finite": true
+    },
+    "2_See You Again_芙宁娜_RVC.wav": {
+      "seconds": 4.1,
+      "semitone": 0,
+      "model_sr": 48000,
+      "finite": true
+    },
+    "3_泡沫_芙宁娜_RVC.wav": {
+      "seconds": 2.8,
+      "semitone": -3,
+      "model_sr": 48000,
+      "finite": true
+    }
+  }
+}

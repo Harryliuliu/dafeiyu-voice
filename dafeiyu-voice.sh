@@ -7,15 +7,16 @@
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh restart [tts|sing|all]
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh status  [tts|sing|musicdl|all]
 #   bash ~/dafeiyu-tools/dafeiyu-voice.sh engine  [breeze]             看说话用的模型
-#   bash ~/dafeiyu-tools/dafeiyu-voice.sh voice   [old|new]            看 / 切换唱歌用的音色
+#   bash ~/dafeiyu-tools/dafeiyu-voice.sh voice   [dafeiyu|furina]     看 / 切换唱歌的默认歌手
 #
 # tts = 说话服务（127.0.0.1:9880，闲置 15 分钟自动退出），现在只有一个模型：
 #       breeze = Breeze TTS 2（芙宁娜参考；仅限非商业用途）
 #       IndexTTS2 已于 2026-11-10 卸载（tts_server.py 留着备查），engine index 会提示已卸载。
-# sing = 唱歌服务（127.0.0.1:9881，闲置 5 分钟自动退出）。音色二选一：
-#       new = 新音色（voices/歌声参考_雨爱_23秒.wav，默认）
-#       old = 原音色（voices/歌声参考_23秒.wav）
-#       切换时唱歌服务正开着就自动重启；两种音色的缓存分开存，来回切不用重唱。
+# sing = 唱歌服务（127.0.0.1:9881，闲置 5 分钟自动退出）。两个歌手同时可用，点歌时可以指定：
+#       dafeiyu = 大肥鱼（Seed-VC + voices/歌声参考_23秒.wav），默认
+#       furina  = 芙宁娜（社区芙宁娜 RVC 模型，rvc_worker.py）
+#       voice 只改“没指定时谁来唱”，不用重启服务；两个歌手的缓存分开存。
+#       雨爱音色 2026-11-10 已去掉（old 按大肥鱼认，new 会提示已去掉）。
 # musicdl = 学歌用的 go-music-dl（127.0.0.1:37777，开机自动常驻；start/stop 也可单独管它，
 #           stop 后要手动 start 才会回来；all 不含它，status all 会显示它）
 # 想让服务一直开着：DAFEIYU_TTS_IDLE=0 / DAFEIYU_SING_IDLE=0 再 start。
@@ -40,25 +41,15 @@ running_engine() {  # 正在跑的说话服务是哪个模型；没在跑就输�
   case "$h" in *'"engine":"breeze"'*) echo breeze ;; *) echo index ;; esac
 }
 
-# 唱歌用哪个音色，记在这个文件里（new / old），没有就是 new
+# 唱歌的默认歌手（点歌没指定谁唱时用），记在这个文件里（dafeiyu / furina），没有就是大肥鱼。
+# 唱歌服务每次点歌都重读它，改了不用重启
 VOICE_FILE="$TOOLS/sing_voice.conf"
 voice() {
   local v
   [ -f "$VOICE_FILE" ] && v="$(tr -d ' \t\r\n' < "$VOICE_FILE")"
-  case "$v" in old) echo old ;; *) echo new ;; esac
+  case "$v" in furina) echo furina ;; *) echo dafeiyu ;; esac
 }
-voice_label() { case "$1" in old) echo "原音色" ;; new) echo "新音色·雨爱" ;; *) echo "其他参考" ;; esac; }
-voice_ref() { case "$1" in old) echo "$TOOLS/voices/歌声参考_23秒.wav" ;; *) echo "$TOOLS/voices/歌声参考_雨爱_23秒.wav" ;; esac; }
-running_voice() {  # 正在跑的唱歌服务用的哪个音色；没在跑就输出空
-  local h
-  h="$(health sing)"
-  [ -z "$h" ] && return
-  case "$h" in
-    *'"ref":"歌声参考_23秒.wav"'*) echo old ;;
-    *'"ref":"歌声参考_雨爱_23秒.wav"'*) echo new ;;
-    *) echo other ;;
-  esac
-}
+voice_label() { case "$1" in furina) echo "芙宁娜" ;; *) echo "大肥鱼" ;; esac; }
 
 svc_py() {
   case "$1" in
@@ -129,14 +120,11 @@ start_one() {
   if [ "$s" = musicdl ]; then start_musicdl; return; fi
   name="$(svc_name "$s")"
   [ "$s" = tts ] && name="${name}（$(engine_label "$(engine)")）"
-  [ "$s" = sing ] && name="${name}（$(voice_label "$(voice)")）"
   take_lock "$s" || { echo "${name}：等别人启动等太久了"; return 1; }
   case "$(health "$s")" in
     *'"status":"ready"'*)
       if [ "$s" = tts ] && [ "$(running_engine)" != "$(engine)" ]; then
         echo "说话服务：已在运行，但用的是 $(engine_label "$(running_engine)")（要换就 restart tts）"
-      elif [ "$s" = sing ] && [ "$(running_voice)" != "$(voice)" ]; then
-        echo "唱歌服务：已在运行，但用的是 $(voice_label "$(running_voice)")（要换就 restart sing）"
       else
         echo "${name}：已在运行"
       fi
@@ -144,12 +132,7 @@ start_one() {
     *'"status":"loading"'*) echo "${name}：正在启动（另一个请求拉起的），等它就绪" ;;
     *)
       rotate_log "$s"
-      if [ "$s" = sing ]; then  # 手动设了 DAFEIYU_SING_REF 就听它的，否则按 sing_voice.conf
-        DAFEIYU_SING_REF="${DAFEIYU_SING_REF:-$(voice_ref "$(voice)")}" \
-          nohup "$(svc_py "$s")" "$(svc_script "$s")" >> "$LOG/${s}_server.log" 2>&1 < /dev/null &
-      else
-        nohup "$(svc_py "$s")" "$(svc_script "$s")" >> "$LOG/${s}_server.log" 2>&1 < /dev/null &
-      fi
+      nohup "$(svc_py "$s")" "$(svc_script "$s")" >> "$LOG/${s}_server.log" 2>&1 < /dev/null &
       pid=$!
       echo "${name}：启动中（进程 ${pid}）"
       ;;
@@ -202,11 +185,11 @@ status_one() {
   name="$(svc_name "$1")"
   if [ -z "$out" ]; then
     [ "$1" = tts ] && name="${name}（选的是 $(engine_label "$(engine)")）"
-    [ "$1" = sing ] && name="${name}（选的是 $(voice_label "$(voice)")）"
+    [ "$1" = sing ] && name="${name}（默认歌手 $(voice_label "$(voice)")）"
     echo "${name}：未运行"
   else
     [ "$1" = tts ] && name="${name}（$(engine_label "$(running_engine)")）"
-    [ "$1" = sing ] && name="${name}（$(voice_label "$(running_voice)")）"
+    [ "$1" = sing ] && name="${name}（默认歌手 $(voice_label "$(voice)")）"
     echo "${name}：$(echo "$out" | grep -o '"status":"[a-z]*"' | head -1 | cut -d'"' -f4)  $out"
   fi
 }
@@ -233,26 +216,24 @@ set_engine() {
 }
 
 set_voice() {
-  local new="$1" old running
+  local new="$1" old
   old="$(voice)"
   case "$new" in
-    "") echo "唱歌音色：$(voice_label "$old")（${old}）。切换：voice old 或 voice new"; return 0 ;;
-    old | new) ;;
-    *) echo "不认识的音色：${new}（只能是 old 或 new）"; return 2 ;;
+    "") echo "唱歌默认歌手：$(voice_label "$old")（${old}）。切换：voice dafeiyu 或 voice furina"; return 0 ;;
+    dafeiyu | old | 大肥鱼 | 原来 | 原音色) new=dafeiyu ;;
+    furina | 芙宁娜) new=furina ;;
+    new | 雨爱 | 新) echo "雨爱音色已经去掉了（2026-11-10），现在只有大肥鱼和芙宁娜"; return 2 ;;
+    *) echo "不认识的歌手：${new}（只能是 dafeiyu 大肥鱼 或 furina 芙宁娜）"; return 2 ;;
   esac
   echo "$new" > "$VOICE_FILE"
-  echo "唱歌音色：$(voice_label "$old") → $(voice_label "$new")"
-  running="$(running_voice)"
-  if [ -n "$running" ] && [ "$running" != "$new" ]; then
-    echo "唱歌服务正开着，重启换成$(voice_label "$new")："
-    stop_one sing
-    start_one sing
+  if [ "$old" = "$new" ]; then
+    echo "唱歌默认歌手本来就是$(voice_label "$new")"
   else
-    echo "下次唱歌服务启动时生效（插件需要时会自动拉起）"
+    echo "唱歌默认歌手：$(voice_label "$old") → $(voice_label "$new")（马上生效，不用重启）"
   fi
 }
 
-usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
 
 cmd="${1:-status}"
 if [ "$cmd" = engine ]; then set_engine "$2"; exit $?; fi

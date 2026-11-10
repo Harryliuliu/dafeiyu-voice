@@ -41,3 +41,9 @@ furina-test/model/
 # GSV 试验：官方代码（自带 git）、芙宁娜语音包不上传
 GPT-SoVITS/
 furina-test/dataset/
+# 芙宁娜唱歌（2026-11-10）：RVC（Applio 代码+环境+芙宁娜模型）和人声分离（audio-separator 环境+模型）都很大，不上传
+rvc-test/
+sep-test/
+# 挑参考用的台词表、参考片段说明来自游戏语音包，不上传
+furina-sing-test/候选句子.csv
+furina-sing-test/参考/

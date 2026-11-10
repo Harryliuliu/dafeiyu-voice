@@ -1,11 +1,19 @@
-"""大肥鱼唱歌服务：点歌 → 找音源 → 截片段 → 分离人声 → 难度检查 → Seed-VC 转换 → 清唱 wav。
+"""大肥鱼唱歌服务：点歌 → 找音源 → 截片段 → 分离人声 → 去和声 → 难度检查 → 换音色 → 清唱 wav。
+
+两个歌手（2026-11-10 起，雨爱已去掉）：
+  dafeiyu = 大肥鱼：Seed-VC + voices/歌声参考_23秒.wav（在本进程里）
+  furina  = 芙宁娜：社区芙宁娜 RVC 模型（rvc_worker.py 子进程，Applio 的 venv）
+点歌时可以指定 voice；不指定就用 sing_voice.conf 里的默认歌手（dafeiyu-voice.sh voice 改，默认大肥鱼）。
+分离在 sep_worker.py 子进程里：Kim 版 Mel-Band Roformer 分人声 → karaoke 模型去和声；
+去和声后主唱几乎没声音（模型把主唱当成了和声）就退回全部人声；分离进程出问题时用 demucs 兜底。
 
 运行（必须用 seed-vc 的 venv）：
   ~/dafeiyu-tools/seed-vc/.venv/bin/python ~/dafeiyu-tools/sing_server.py
 
 接口（只监听 127.0.0.1）：
-  POST /sing              {"song", "artist", "start", "duration", "learn", "learn_daily_limit"}
+  POST /sing              {"song", "artist", "start", "duration", "voice", "probe", "learn", "learn_daily_limit"}
                           → 任务（命中缓存直接 done）。库里没有且 learn=true 时，先去学歌（默认走 go-music-dl 多源）
+                          probe=true：只看库里有没有、能不能唱，返回 found，不接单（插件先问对方想听谁唱）
   GET  /sing/{job_id}     任务状态：queued / running(找歌/截取/分离/检查难度/转换) / done / failed + 原因
   GET  /songs             歌曲库里能唱的歌
   GET  /health            状态、排队情况
@@ -43,7 +51,7 @@ os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # 必须在导入 tor
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 TOOLS = Path.home() / "dafeiyu-tools"
-CACHE_VERSION = "1"  # 改动转换方式时加一，旧缓存自动失效
+CACHE_VERSION = "2"  # 改动转换方式时加一，旧缓存自动失效（2 = Roformer 分离 + 去和声）
 AUDIO_EXT = {".wav", ".m4a", ".mp3", ".flac", ".aac", ".ogg"}
 
 
@@ -53,8 +61,16 @@ def parse_args():
     p.add_argument("--host", default=env("DAFEIYU_SING_HOST", "127.0.0.1"))
     p.add_argument("--port", type=int, default=int(env("DAFEIYU_SING_PORT", "9881")))
     p.add_argument("--library", default=env("DAFEIYU_SING_LIBRARY", str(TOOLS / "歌曲库")))
-    # 2026-11-05 换成新音色（雨爱 75.2 秒起 23 秒，用户在 A/B/C 里选了 B）；原来的是 voices/歌声参考_23秒.wav
-    p.add_argument("--ref", default=env("DAFEIYU_SING_REF", str(TOOLS / "voices" / "歌声参考_雨爱_23秒.wav")))
+    # 大肥鱼（Seed-VC）的参考歌声。2026-11-05 试过雨爱，2026-11-10 用户决定只留大肥鱼和芙宁娜
+    p.add_argument("--ref", default=env("DAFEIYU_SING_REF", str(TOOLS / "voices" / "歌声参考_23秒.wav")))
+    p.add_argument("--voice-file", default=env("DAFEIYU_SING_VOICE_FILE", str(TOOLS / "sing_voice.conf")),
+                   help="默认歌手记在这个文件里（furina / dafeiyu），点歌没指定歌手时用它")
+    # 芙宁娜 RVC 没有参考歌声，硬唱时按她说话的中位音高（语音包约 301 Hz，挑的参考 308 Hz）拉过去
+    p.add_argument("--furina-median", type=float, default=305.0)
+    p.add_argument("--no-karaoke", action="store_true", default=env("DAFEIYU_SING_KARAOKE", "1") == "0",
+                   help="不去和声（只分人声）")
+    p.add_argument("--lead-min-db", type=float, default=6.0,
+                   help="去和声后主唱比全部人声小这么多分贝以上，就当去和声失败，退回全部人声")
     # 用户试听选了“参考 23 秒 + 40 步”：长音气息更稳；参考缩到 12 秒能快 2.5 倍但有轻微电音
     p.add_argument("--ref-seconds", type=float, default=float(env("DAFEIYU_SING_REF_SECONDS", "25")))
     p.add_argument("--diffusion-steps", type=int, default=int(env("DAFEIYU_SING_STEPS", "40")))
@@ -98,7 +114,30 @@ def voice_tag(ref: str) -> str:
     return "_" + hashlib.md5(Path(ref).read_bytes()).hexdigest()[:6]
 
 
-VOICE_TAG = ""  # main() 里按 --ref 算好
+VOICE_TAG = ""  # main() 里按 --ref 算好（大肥鱼）
+RVC_TAG = ""  # main() 里按芙宁娜 RVC 模型文件算好
+
+# 两个歌手。label 给插件和日志看；aliases 是点歌时可能的写法
+VOICES = {
+    "dafeiyu": {"label": "大肥鱼", "engine": "Seed-VC"},
+    "furina": {"label": "芙宁娜", "engine": "RVC"},
+}
+VOICE_ALIASES = {"dafeiyu": "dafeiyu", "大肥鱼": "dafeiyu", "old": "dafeiyu", "原音色": "dafeiyu",
+                 "furina": "furina", "芙宁娜": "furina"}
+
+
+def default_voice() -> str:
+    """sing_voice.conf 里的默认歌手。以前的 old（原音色）就是大肥鱼；new（雨爱）已去掉，也按大肥鱼。"""
+    try:
+        v = Path(ARGS.voice_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        v = ""
+    return "furina" if v == "furina" else "dafeiyu"
+
+
+def pick_voice(v) -> str:
+    return VOICE_ALIASES.get(str(v or "").strip().lower()) or default_voice()
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [唱歌服务] %(message)s", datefmt="%m-%d %H:%M:%S")
 log = logging.getLogger("sing_server")
@@ -110,12 +149,15 @@ class State:
     load_seconds = 0.0
     last_active = time.monotonic()
     started = time.time()
-    avg_job_seconds = 200.0  # 用实际耗时滚动更新，用来估算等待时间（30 秒片段实测约 3 分钟）
+    # 用实际耗时滚动更新，用来估算等待时间：大肥鱼 30 秒片段约 3.5 分钟，芙宁娜（RVC）不到 1 分钟
+    avg_job_seconds = {"dafeiyu": 220.0, "furina": 50.0}
     learn_blocked_until = 0.0
 
 
 STATE = State()
 ENGINE = None
+SEP = None  # 人声分离子进程（sing_workers.Worker）
+RVC = None  # 芙宁娜 RVC 子进程
 EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sing")  # 模型和任务都在这一个线程里
 JOBS: dict = {}
 ACTIVE: dict = {}  # 缓存键 → 未完成的 job_id，同一首歌重复点只做一次
@@ -315,12 +357,13 @@ def import_inbox():
         log.exception("处理待导入文件夹出错")
 
 
-def new_job(stem, kind, path, start, duration, key):
+def new_job(stem, kind, path, start, duration, key, voice):
     jid = uuid.uuid4().hex[:10]
     JOBS[jid] = {
         "job_id": jid, "song": stem, "source": kind, "status": "queued", "stage": "排队",
         "start": start, "duration": duration, "reason": "", "message": "",
         "file": "", "semitone": None, "pitch": None, "stretch": None,
+        "voice": voice, "voice_label": VOICES[voice]["label"], "separation": None,
         "created": time.time(), "started": None, "finished": None,
         "_path": str(path), "_key": key,
     }
@@ -331,12 +374,13 @@ def public(job: dict) -> dict:
     out = {k: v for k, v in job.items() if not k.startswith("_")}
     out["learning"] = bool(job.get("_learn"))
     extra = LEARN_EXTRA_SECONDS if job.get("_learn") else 0
+    avg = STATE.avg_job_seconds
     if job["status"] == "queued":
         ahead = [j for j in JOBS.values() if j["status"] in ("queued", "running") and j["created"] < job["created"]]
         out["position"] = len(ahead) + 1
-        out["eta_seconds"] = int(STATE.avg_job_seconds * (len(ahead) + 1) + extra)
+        out["eta_seconds"] = int(sum(avg[j["voice"]] for j in ahead) + avg[job["voice"]] + extra)
     elif job["status"] == "running":
-        out["eta_seconds"] = max(5, int(STATE.avg_job_seconds + extra - (time.time() - job["started"])))
+        out["eta_seconds"] = max(5, int(avg[job["voice"]] + extra - (time.time() - job["started"])))
     return out
 
 
@@ -345,11 +389,16 @@ def fail(job, reason, message):
     log.info("失败｜%s｜%s", job["song"], message)
 
 
-def cache_name(stem, start, duration):
+def cache_name(stem, start, duration, voice):
     start_txt = "auto" if start is None else f"{start:.1f}"
     safe = re.sub(r'[\\/:*?"<>|]', "_", stem)
-    setting = f"r{ARGS.ref_seconds:g}s{ARGS.diffusion_steps}{VOICE_TAG}"  # 换了转换设置或音色，旧缓存自动不用
-    return f"{safe}@{start_txt}+{duration:.0f}_v{CACHE_VERSION}{setting}.wav"
+    # 换了转换设置、歌手或分离方式，旧缓存自动不用
+    if voice == "furina":
+        setting = f"rvc{RVC_TAG}"
+    else:
+        setting = f"r{ARGS.ref_seconds:g}s{ARGS.diffusion_steps}{VOICE_TAG}"
+    sep = "" if not ARGS.no_karaoke else "nk"
+    return f"{safe}@{start_txt}+{duration:.0f}_v{CACHE_VERSION}{sep}{setting}.wav"
 
 
 def known_start(stem):
@@ -362,14 +411,15 @@ def known_start(stem):
     return None
 
 
-def toward_ref(med):
-    """把中位音高 med 拉到参考歌声中位音高附近要升降几个半音。"""
+def toward_ref(med, voice):
+    """把中位音高 med 拉到这个歌手的中位音高附近要升降几个半音。"""
     import math
-    s = round(12 * math.log2(ENGINE.ref_median_hz / med))
+    target = ARGS.furina_median if voice == "furina" else ENGINE.ref_median_hz
+    s = round(12 * math.log2(target / med))
     return max(-ARGS.max_shift, min(ARGS.max_shift, s))
 
 
-def decide_semitone(stem, pitch):
+def decide_semitone(stem, pitch, voice):
     """返回 (半音, None, 硬唱原因或 None) 或 (None, (原因, 说明), None)。"""
     wl = list_key(stem, read_list("白名单.txt"))
     if wl and wl[1]:
@@ -385,10 +435,10 @@ def decide_semitone(stem, pitch):
     if ARGS.ok_high < med <= ARGS.shift_high:
         return ARGS.shift_semitones, None, None
     if wl:  # 白名单但音高超出范围：照唱，靠近她的音域
-        return toward_ref(med), None, None
+        return toward_ref(med, voice), None, None
     kind = "too_high" if med > ARGS.shift_high else "too_low"
     if not ARGS.no_stretch:
-        return toward_ref(med), None, kind
+        return toward_ref(med, voice), None, kind
     if kind == "too_high":
         return None, ("too_high", f"原唱太高了（中位音高约 {med:.0f} Hz），她的嗓子够不着"), None
     return None, ("too_low", f"原唱太低了（中位音高约 {med:.0f} Hz），像是男声歌，她唱不出味道"), None
@@ -432,12 +482,101 @@ def learn_step(job) -> bool:
         return False
     start = job["start"] if job["start"] is not None else known_start(stem)
     job.update(song=stem, source="原曲", _path=str(path), start=start,
-               _key=cache_name(stem, start, job["duration"]))
+               _key=cache_name(stem, start, job["duration"], job["voice"]))
     return True
 
 
+JOB_TMP = RUN_DIR / "sing_tmp"  # 和子进程交换音频用的临时文件
+
+
+def _db(x) -> float:
+    import numpy as np
+    return float(10 * np.log10(np.mean(np.asarray(x, dtype=np.float64) ** 2) + 1e-12))
+
+
+def separate_vocals(stereo, job):
+    """双声道原曲 → 双声道人声（Roformer，还带和声）。分离进程出问题时用 demucs 兜底（单声道复制成双声道）。"""
+    import numpy as np
+    import soundfile as sf
+    from sing_engine import SR
+
+    JOB_TMP.mkdir(parents=True, exist_ok=True)
+    src, dst = JOB_TMP / f"{job['job_id']}_mix.wav", JOB_TMP / f"{job['job_id']}_vocals.wav"
+    try:
+        sf.write(str(src), stereo, SR, subtype="FLOAT")
+        SEP.call({"op": "vocals", "input": str(src), "output": str(dst)}, timeout=120 + 2 * len(stereo) / SR)
+        out, sr = sf.read(str(dst), dtype="float32", always_2d=True)
+        if sr != SR:
+            raise RuntimeError(f"分离结果采样率是 {sr}")
+        job["separation"] = "Roformer 人声"
+        return out[:, :2] if out.shape[1] >= 2 else np.repeat(out, 2, axis=1)
+    except Exception as e:  # noqa: BLE001
+        log.warning("分离进程出错（%s），这次用 demucs 兜底", e)
+        job["separation"] = "demucs 兜底"
+        v = ENGINE.separate(stereo)
+        return np.stack([v, v], axis=1)
+    finally:
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+
+
+def lead_vocals(segment, job):
+    """双声道人声 → 单声道主唱（去和声）。去和声后主唱小了太多（模型把主唱当成了和声，
+    2026-11-10 唯一 0:15 就这样），或者去和声出错，就退回全部人声。"""
+    import soundfile as sf
+    from sing_engine import SR
+
+    everything = segment.mean(axis=1)
+    if ARGS.no_karaoke:
+        return everything
+    tag = job["job_id"]
+    src, lead, back = (JOB_TMP / f"{tag}_{n}.wav" for n in ("seg", "lead", "backing"))
+    try:
+        sf.write(str(src), segment, SR, subtype="FLOAT")
+        SEP.call({"op": "lead", "input": str(src), "output": str(lead), "backing": str(back)},
+                 timeout=120 + 2 * len(segment) / SR)
+        main_v = sf.read(str(lead), dtype="float32", always_2d=True)[0].mean(axis=1)
+        side_v = sf.read(str(back), dtype="float32", always_2d=True)[0].mean(axis=1)
+        n = min(len(main_v), len(everything))
+        main_v = main_v[:n]
+        lost = _db(everything[:n]) - _db(main_v)
+        if lost > ARGS.lead_min_db:
+            log.info("去和声后主唱小了 %.1f dB，像是把主唱当成了和声，退回全部人声", lost)
+            job["separation"] += f"，去和声失败（主唱小了 {lost:.0f} dB），用全部人声"
+            return everything
+        job["separation"] += f"，去和声（和声比主唱低 {_db(main_v) - _db(side_v[:n]):.0f} dB）"
+        return main_v
+    except Exception as e:  # noqa: BLE001
+        log.warning("去和声出错（%s），用全部人声", e)
+        job["separation"] += "，去和声出错，用全部人声"
+        return everything
+    finally:
+        for f in (src, lead, back):
+            f.unlink(missing_ok=True)
+
+
+def rvc_convert(vocals, semitone, tag):
+    """单声道主唱（44.1 kHz）→ 芙宁娜 RVC → 44.1 kHz。"""
+    import soundfile as sf
+    import soxr
+    from sing_engine import SR
+
+    JOB_TMP.mkdir(parents=True, exist_ok=True)
+    src, dst = JOB_TMP / f"{tag}_rvc_in.wav", JOB_TMP / f"{tag}_rvc_out.wav"
+    try:
+        sf.write(str(src), vocals, SR, subtype="FLOAT")
+        RVC.call({"input": str(src), "output": str(dst), "semitone": int(semitone)},
+                 timeout=120 + len(vocals) / SR)
+        out, sr = sf.read(str(dst), dtype="float32", always_2d=True)
+        out = out.mean(axis=1)
+        return soxr.resample(out, sr, SR) if sr != SR else out
+    finally:
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+
+
 def run_job(job):
-    """在工作线程里跑：（学歌 →）截取 → 分离 → 检查难度 → 转换 → 写缓存。"""
+    """在工作线程里跑：（学歌 →）截取 → 分离 → 去和声 → 检查难度 → 转换 → 写缓存。"""
     import numpy as np
     import soundfile as sf
     from sing_engine import SR, decode, finish, loudest_window, probe_duration
@@ -453,32 +592,40 @@ def run_job(job):
         dur = job["duration"]
         start = job["start"]
 
+        voice, tag = job["voice"], job["job_id"]
         job["stage"] = "截取"
-        if kind == "清唱":
+        if kind == "清唱":  # 本来就是干声，不分离
             if start is None:
                 whole = decode(path, channels=1)[:, 0]
                 start = loudest_window(whole, dur)
                 vocals = whole[int(start * SR):int((start + dur) * SR)]
             else:
                 vocals = decode(path, start=start, duration=dur, channels=1)[:, 0]
+            job["separation"] = "清唱源，不用分离"
         else:
-            full = SEP_CACHE / f"{stem}.flac"
-            if start is None or full.exists():
-                if not full.exists():
+            full = SEP_CACHE / f"{stem}.flac"  # 整首分离好的双声道人声（还带和声）
+            whole = None
+            if full.exists():
+                whole, _ = sf.read(str(full), dtype="float32", always_2d=True)
+                if whole.shape[1] != 2:  # 2026-11-10 以前 demucs 存的单声道，重新分
+                    whole = None
+            if start is None or whole is not None:
+                if whole is None:
                     job["stage"] = "分离（整首）"
                     log.info("整首分离：%s（%.0f 秒）", stem, probe_duration(path))
-                    v = ENGINE.separate(decode(path))
+                    whole = separate_vocals(decode(path), job)
                     SEP_CACHE.mkdir(parents=True, exist_ok=True)
-                    sf.write(str(full), v, SR, format="FLAC")
-                whole, _ = sf.read(str(full), dtype="float32")
+                    sf.write(str(full), whole, SR, format="FLAC")
                 os.utime(full)
+                job["separation"] = job["separation"] or "Roformer 人声（整首，已缓存）"
                 if start is None:
-                    start = loudest_window(whole, dur)
-                vocals = whole[int(start * SR):int((start + dur) * SR)]
+                    start = loudest_window(whole.mean(axis=1), dur)
+                segment = whole[int(start * SR):int((start + dur) * SR)]
             else:
-                stereo = decode(path, start=start, duration=dur)
                 job["stage"] = "分离"
-                vocals = ENGINE.separate(stereo)
+                segment = separate_vocals(decode(path, start=start, duration=dur), job)
+            job["stage"] = "去和声"
+            vocals = lead_vocals(segment, job)
         job["start"] = round(float(start), 1)
         if len(vocals) < SR * 3:
             return fail(job, "too_short", "截出来的片段太短了，起点可能超过了歌曲长度")
@@ -486,7 +633,7 @@ def run_job(job):
         job["stage"] = "检查难度"
         pitch = ENGINE.pitch_stats(vocals)
         job["pitch"] = {k: round(v, 2 if k == "voiced_ratio" else 0) for k, v in pitch.items()}
-        semitone, problem, stretch = decide_semitone(stem, pitch)
+        semitone, problem, stretch = decide_semitone(stem, pitch, voice)
         if problem:
             return fail(job, *problem)
         job["semitone"] = semitone
@@ -494,8 +641,8 @@ def run_job(job):
             job["stretch"] = stretch
             log.info("硬唱｜%s｜%s，中位 %.0f Hz，升降 %+d", stem, stretch, pitch["median_hz"], semitone)
 
-        job["stage"] = "转换"
-        out = finish(ENGINE.convert(vocals, semitone))
+        job["stage"] = f"转换（{VOICES[voice]['label']}）"
+        out = finish(rvc_convert(vocals, semitone, tag) if voice == "furina" else ENGINE.convert(vocals, semitone))
         if not np.isfinite(out).all():
             raise RuntimeError("转换结果里有无效数值")
         dest = CACHE / job["_key"]
@@ -503,14 +650,16 @@ def run_job(job):
         sf.write(str(tmp), out, SR, subtype="PCM_16", format="WAV")
         os.replace(tmp, dest)
         (dest.with_suffix(".json")).write_text(json.dumps(
-            {"song": stem, "source": kind, "start": job["start"], "duration": dur,
+            {"song": stem, "source": kind, "start": job["start"], "duration": dur, "voice": voice,
+             "voice_label": VOICES[voice]["label"], "separation": job["separation"],
              "semitone": semitone, "pitch": job["pitch"], "stretch": stretch}, ensure_ascii=False))
         prune_cache()
         elapsed = time.time() - t0
-        STATE.avg_job_seconds = 0.7 * STATE.avg_job_seconds + 0.3 * elapsed
+        if not job.get("_learn"):  # 学歌那几分钟不算进平均，免得把普通点歌的估计拉长
+            STATE.avg_job_seconds[voice] = 0.7 * STATE.avg_job_seconds[voice] + 0.3 * elapsed
         job.update(status="done", stage="完成", file=str(dest), finished=time.time())
-        log.info("完成 %.0f 秒｜%s｜起点 %.0f｜升降 %+d｜中位 %.0f Hz", elapsed, stem, start, semitone,
-                 pitch["median_hz"])
+        log.info("完成 %.0f 秒｜%s｜%s｜起点 %.0f｜升降 %+d｜中位 %.0f Hz｜%s", elapsed, stem,
+                 VOICES[voice]["label"], start, semitone, pitch["median_hz"], job["separation"])
     except Exception as e:  # noqa: BLE001
         log.exception("任务出错")
         fail(job, "error", f"{type(e).__name__}: {e}")
@@ -535,11 +684,12 @@ def prune_cache():
         f.with_suffix(".json").unlink(missing_ok=True)
 
 
-def cached_result(key):
+def cached_result(key, touch=True):
     f = CACHE / key
     if not f.exists():
         return None
-    os.utime(f)
+    if touch:
+        os.utime(f)
     meta = {}
     try:
         meta = json.loads(f.with_suffix(".json").read_text())
@@ -563,6 +713,24 @@ def _load_engine():
     except Exception as e:  # noqa: BLE001
         STATE.status, STATE.error = "error", f"{type(e).__name__}: {e}"
         log.exception("模型加载失败")
+
+
+def _warm_workers():
+    """后台线程：先把分离进程和芙宁娜 RVC 进程拉起来、加载好模型（各约 5–10 秒），第一首歌就不用等。
+    失败也不要紧：真正用到时还会再试，分离还有 demucs 兜底。"""
+    import threading
+
+    def warm(w):
+        if not w.available():
+            log.warning("%s 进程的环境或脚本不在，用到时会失败", w.name)
+            return
+        try:
+            w.warm()
+        except Exception as e:  # noqa: BLE001
+            log.warning("%s 进程没拉起来：%s", w.name, e)
+
+    for w in (SEP, RVC):
+        threading.Thread(target=warm, args=(w,), daemon=True).start()
 
 
 def busy() -> bool:
@@ -593,13 +761,17 @@ async def lifespan(app):
     except OSError:
         pass
     STATE.last_active = time.monotonic()
-    log.info("启动：端口 %d，歌曲库 %s，闲置 %d 秒退出", ARGS.port, LIB, ARGS.idle_timeout)
+    log.info("启动：端口 %d，歌曲库 %s，闲置 %d 秒退出，默认歌手 %s", ARGS.port, LIB, ARGS.idle_timeout,
+             VOICES[default_voice()]["label"])
+    _warm_workers()
     asyncio.get_running_loop().run_in_executor(EXECUTOR, _load_engine)
     watchdog = asyncio.create_task(idle_watchdog())
     try:
         yield
     finally:
         watchdog.cancel()
+        for w in (SEP, RVC):
+            w.stop()
         try:
             if PID_FILE.read_text().strip() == str(os.getpid()):
                 PID_FILE.unlink()
@@ -625,6 +797,8 @@ def build_app():
         suggest: bool = True  # 库里没有时先看歌单里有没有只差一两个字的歌（did_you_mean）
         confirmed: bool = False  # 学歌：False 时只搜索不下载，返回 confirm 让点歌的人确认版本
         pick: Optional[dict] = None  # 学歌：点歌的人确认过的那一首（confirm 返回的 candidate）
+        voice: Optional[str] = None  # 谁来唱：furina / dafeiyu（中文名也认）；不写用默认歌手
+        probe: bool = False  # 只看能不能唱，不接单：库里有就返回 found
 
     class BlacklistRequest(BaseModel):
         song: str
@@ -669,12 +843,18 @@ def build_app():
         if start is None:
             start = known_start(stem)
 
-        key = cache_name(stem, start, dur)
+        if req.probe:  # 插件先问“想听谁唱”，这里只告诉它这首能唱、哪个歌手已经有现成的
+            ready = [v for v in VOICES if cached_result(cache_name(stem, start, dur, v), touch=False)]
+            return {"status": "found", "song": stem, "source": kind, "cached_voices": ready,
+                    "default_voice": default_voice()}
+        voice = pick_voice(req.voice)
+        key = cache_name(stem, start, dur, voice)
         hit = cached_result(key)
         if hit:
             f, meta = hit
-            log.info("缓存命中｜%s", stem)
-            return {"status": "done", "cached": True, "song": stem, "file": str(f), **meta}
+            log.info("缓存命中｜%s｜%s", stem, VOICES[voice]["label"])
+            return {"status": "done", "cached": True, "song": stem, "file": str(f), **meta,
+                    "voice": voice, "voice_label": VOICES[voice]["label"]}
         if key in ACTIVE and JOBS[ACTIVE[key]]["status"] in ("queued", "running"):
             return public(JOBS[ACTIVE[key]])
         pending = sum(1 for j in JOBS.values() if j["status"] in ("queued", "running"))
@@ -682,9 +862,10 @@ def build_app():
             return {"status": "failed", "reason": "queue_full", "song": stem,
                     "message": f"已经有 {pending} 首在排队了，等会儿再点"}
 
-        job = new_job(stem, kind, path, start, dur, key)
+        job = new_job(stem, kind, path, start, dur, key, voice)
         ACTIVE[key] = job["job_id"]
-        log.info("接单｜%s（%s，起点 %s）", stem, kind, "自动" if start is None else f"{start:.0f}s")
+        log.info("接单｜%s｜%s（%s，起点 %s）", stem, VOICES[voice]["label"], kind,
+                 "自动" if start is None else f"{start:.0f}s")
         asyncio.get_running_loop().run_in_executor(EXECUTOR, run_job, job)
         return public(job)
 
@@ -747,7 +928,7 @@ def build_app():
             return {"status": "failed", "reason": "queue_full", "song": title,
                     "message": f"已经有 {pending} 首在排队了，等会儿再点"}
         display = f"{artist}-{title}" if artist else title
-        job = new_job(display, "学歌", "", start, dur, None)
+        job = new_job(display, "学歌", "", start, dur, None, pick_voice(req.voice))
         job["_learn"] = {"title": title, "artist": artist, "pick": req.pick}
         job["stage"] = "排队（要先学歌）"
         ACTIVE[key] = job["job_id"]
@@ -792,10 +973,13 @@ def build_app():
             "running": next((public(j) for j in JOBS.values() if j["status"] == "running"), None),
             "idle_seconds": int(time.monotonic() - STATE.last_active), "idle_timeout": ARGS.idle_timeout,
             "model_load_seconds": round(STATE.load_seconds, 1),
-            "avg_job_seconds": round(STATE.avg_job_seconds),
+            "avg_job_seconds": {v: round(s) for v, s in STATE.avg_job_seconds.items()},
             "uptime_seconds": int(time.time() - STATE.started),
             "library": str(LIB), "diffusion_steps": ARGS.diffusion_steps, "ref_seconds": ARGS.ref_seconds,
             "stretch": not ARGS.no_stretch, "ref": Path(ARGS.ref).name,
+            "voices": {v: info["label"] for v, info in VOICES.items()}, "default_voice": default_voice(),
+            "karaoke": not ARGS.no_karaoke,
+            "workers": {w.name: w.alive() for w in (SEP, RVC)},
         }
 
     @app.post("/admin/clear_cache")
@@ -833,12 +1017,19 @@ def main():
 
     if not Path(ARGS.ref).exists():
         sys.exit(f"找不到参考歌声：{ARGS.ref}")
-    global VOICE_TAG
+    global VOICE_TAG, RVC_TAG, SEP, RVC
     VOICE_TAG = voice_tag(ARGS.ref)
     with socket.socket() as s:
         if s.connect_ex((ARGS.host, ARGS.port)) == 0:
             sys.exit(f"端口 {ARGS.port} 已被占用：唱歌服务可能已经在运行")
     sys.path.insert(0, str(TOOLS))
+    import hashlib
+
+    import sing_workers
+
+    SEP, RVC = sing_workers.separator(log.info), sing_workers.rvc(log.info)
+    pth = TOOLS / "rvc-test" / "model" / "芙宁娜.pth"
+    RVC_TAG = hashlib.md5(pth.read_bytes()).hexdigest()[:6] if pth.exists() else "none"
     global SERVER
     SERVER = uvicorn.Server(uvicorn.Config(build_app(), host=ARGS.host, port=ARGS.port,
                                            log_level="warning", access_log=False))

@@ -125,11 +125,9 @@ class SingEngine:
             # load_models 里打过补丁：vocoder_fn = lambda x: bigvgan_model(x.cpu()).to(device)，从闭包取出模型
             self.vocoder_fn = ChunkedVocoder(self.vocoder_fn.__closure__[0].cell_contents, self.device)
         self._prepare_reference(ref_path)
-
-        from demucs.pretrained import get_model
-
-        self.demucs = get_model("htdemucs").cpu().eval()
-        self.vocals_idx = self.demucs.sources.index("vocals")
+        # 2026-11-10 起分离改用 sep_worker.py（Roformer + 去和声），demucs 只在分离进程出问题时兜底，用到才加载
+        self.demucs = None
+        self.vocals_idx = None
 
     # ------------------------------------------------------------ 参考歌声 ----
     def _prepare_reference(self, ref_path: str):
@@ -159,6 +157,11 @@ class SingEngine:
         """stereo: (采样数, 2) 44.1 kHz → 人声单声道。CPU 上跑（MPS 不支持 demucs 的大卷积）。"""
         from demucs.apply import apply_model
 
+        if self.demucs is None:
+            from demucs.pretrained import get_model
+
+            self.demucs = get_model("htdemucs").cpu().eval()
+            self.vocals_idx = self.demucs.sources.index("vocals")
         torch = self.torch
         wav = torch.from_numpy(np.ascontiguousarray(stereo.T)).float()
         mono = wav.mean(0)

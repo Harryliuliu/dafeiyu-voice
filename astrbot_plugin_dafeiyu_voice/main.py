@@ -55,16 +55,31 @@ def model_label(health: dict) -> str:
     return MODEL_NAMES.get(health.get("engine") or "index", "未知模型")
 
 
-# 唱歌音色二选一（dafeiyu-voice.sh voice 切换，记在 sing_voice.conf）
-VOICE_NAMES = {"new": "新音色·雨爱", "old": "原音色"}
-VOICE_FILES = {"歌声参考_雨爱_23秒.wav": "new", "歌声参考_23秒.wav": "old"}
-VOICE_ALIASES = {"新": "new", "新音色": "new", "雨爱": "new", "new": "new",
-                 "原来": "old", "原音色": "old", "原": "old", "旧": "old", "old": "old"}
+# 唱歌的两个歌手（2026-11-10 起；雨爱已去掉）：芙宁娜本人（RVC）和特邀嘉宾大肥鱼（Seed-VC）。
+# 点歌时先问对方想听谁唱；没回答就用默认歌手（/唱歌 音色 改，记在 sing_voice.conf，默认大肥鱼）
+SINGERS = {"furina": "芙宁娜", "dafeiyu": "大肥鱼"}
+SINGER_EXACT = {"芙宁娜": "furina", "芙芙": "furina", "furina": "furina",
+                "大肥鱼": "dafeiyu", "肥鱼": "dafeiyu", "dafeiyu": "dafeiyu"}
+# 回答“想听谁唱”时的说法；先看嘉宾，免得“你请嘉宾唱吧”被“你”认成芙宁娜
+GUEST_RE = re.compile(r"大肥鱼|肥鱼|鱼|嘉宾|特邀|^2$|后者|后面那个")
+SELF_RE = re.compile(r"芙宁娜|芙芙|芙|你|自己|本人|本女士|大导演|水神|亲自|^1$|前者|前面那个")
+ANY_RE = re.compile(r"随便|都行|都可以|都好|无所谓|你定|你决定|看你|听你的|你安排")
 
 
-def voice_label(health: dict) -> str:
-    """从唱歌服务的 /health 看正在用哪个音色。"""
-    return VOICE_NAMES.get(VOICE_FILES.get(health.get("ref") or ""), "其他参考歌声")
+def parse_singer(text: str):
+    """把“想听谁唱”的回答认成 furina / dafeiyu；认不出返回 None，“随便”返回 "any"。"""
+    t = re.sub(r"\s+", "", text or "").lower()
+    if not t:
+        return None
+    if t in SINGER_EXACT:
+        return SINGER_EXACT[t]
+    if ANY_RE.search(t):
+        return "any"
+    if GUEST_RE.search(t):
+        return "dafeiyu"
+    if SELF_RE.search(t):
+        return "furina"
+    return None
 
 
 class LearnCmdFilter(CustomFilter):
@@ -134,15 +149,15 @@ class DafeiyuVoice(Star):
     def refuse(self, reason: str, **fmt) -> str:
         texts = self.cfg("refuse_texts", {}) or {}
         builtin = {  # 配置里没有这几条时用
-            "no_vocals": "这首好像没有人声（可能是纯音乐或伴奏版），我没法唱",
-            "too_short": "这首截出来太短了，我没法唱",
+            "no_vocals": "这首好像是纯伴奏，没有人声，本女士没法照着唱",
+            "too_short": "这一段截出来太短了，连一句都唱不完整",
         }
         if reason in builtin and not texts.get(reason):
             return builtin[reason]
         key = {"queue_full": "busy"}.get(reason, reason)
         if key.startswith("learn_") and key not in ("learn_limit", "learn_blocked"):
             key = "learn_failed"
-        text = texts.get(key) or texts.get("error") or "呜…没唱出来"
+        text = texts.get(key) or texts.get("error") or "呜……没唱成"
         try:
             return text.format(**fmt)
         except (KeyError, IndexError):
@@ -399,11 +414,13 @@ class DafeiyuVoice(Star):
 
     async def _request_song(self, event: AstrMessageEvent, song: str, artist: str = "", start=None,
                             learn: bool = False, suggest: bool = True, confirmed: bool = False,
-                            pick: dict | None = None) -> dict:
+                            pick: dict | None = None, voice: str | None = None, probe: bool = False) -> dict:
         """向唱歌服务点歌。返回服务的回应，另加 refuse（给群友的话）；接单成功会在后台等结果并发送。
         learn=True 时，库里没有就去学（经本机 go-music-dl 多源：网易云/QQ/酷狗/酷我/咪咕/千千/汽水/JOOX/Apple/B站/5sing/Jamendo）。
         suggest=True 时，库里没有先返回 did_you_mean（歌单里只差一两个字的歌）；
-        learn 且 confirmed=False 时只搜索不下载，返回 confirm（要学的版本），确认后带 confirmed+pick 再请求。"""
+        learn 且 confirmed=False 时只搜索不下载，返回 confirm（要学的版本），确认后带 confirmed+pick 再请求。
+        voice：furina / dafeiyu，谁来唱（不填用默认歌手）；probe=True 只问库里有没有，有就返回 found、不接单
+        （先问点歌的人想听谁唱，顺便把唱歌服务拉起来）。"""
         if not (await self.chat_settings(event.unified_msg_origin)).get("sing", True):
             return {"status": "failed", "reason": "disabled", "refuse": self.refuse("disabled"),
                     "message": "这个群没有开放唱歌"}
@@ -415,7 +432,7 @@ class DafeiyuVoice(Star):
             return {"status": "failed", "reason": "service", "refuse": self.refuse("service")}
         body = {"song": song, "artist": artist or "", "duration": int(self.cfg("sing_duration", 30)),
                 "learn": learn, "learn_daily_limit": int(self.cfg("learn_daily_limit", 5)),
-                "suggest": suggest, "confirmed": confirmed, "pick": pick}
+                "suggest": suggest, "confirmed": confirmed, "pick": pick, "voice": voice, "probe": probe}
         if start:
             body["start"] = start
         try:
@@ -431,7 +448,7 @@ class DafeiyuVoice(Star):
         if resp.get("status") == "failed":
             resp["refuse"] = self.refuse(resp.get("reason", "error"))
             return resp
-        if resp.get("status") == "confirm":  # 还没下载，等点歌的人确认
+        if resp.get("status") in ("confirm", "found"):  # 还没下载 / 还没接单，等点歌的人确认或选歌手
             return resp
         umo = event.unified_msg_origin
         self._sing_user_last[(umo, event.get_sender_id())] = time.time()
@@ -465,8 +482,53 @@ class DafeiyuVoice(Star):
 
     def _confirm_question(self, resp: dict) -> str:
         c = resp.get("candidate") or {}
-        return (f"这首我还没学过~ 我在{resp.get('source_name', '')}找到的是《{c.get('name')}》- {c.get('artist')}"
+        return (f"这首我还没排练过~ 我在{resp.get('source_name', '')}找到的是《{c.get('name')}》- {c.get('artist')}"
                 f"（{mmss(c.get('duration'))}），是这首吗？回「是」我就去学（大概 6 分钟），回「不是」就先不学")
+
+    def default_singer(self) -> str:
+        """没问 / 没等到回答时谁来唱：启停脚本记在 sing_voice.conf 里，没记就是大肥鱼。"""
+        script = Path(self.cfg("control_script") or "~/dafeiyu-tools/dafeiyu-voice.sh").expanduser()
+        try:
+            name = (script.parent / "sing_voice.conf").read_text().strip()
+        except OSError:
+            name = ""
+        return "furina" if name == "furina" else "dafeiyu"
+
+    async def _choose_singer(self, event: AstrMessageEvent, preset: str | None = None) -> str:
+        """问点歌的人想听谁唱（芙宁娜本人 / 特邀嘉宾大肥鱼），只认他本人的回答。
+        点歌时已经说了谁唱、或者配置里关掉了“问谁唱”，就不问；没等到回答就用默认歌手。"""
+        if preset in SINGERS:
+            return preset
+        default = self.default_singer()
+        if not self.cfg("ask_singer", True):
+            return default
+        question = self.cfg("singer_question") or "这首想听本女士亲自献唱，还是请特邀嘉宾大肥鱼登台？回「芙宁娜」或「大肥鱼」就好"
+        await event.send(event.plain_result(question))
+        answer = {}
+
+        @session_waiter(timeout=ASK_TIMEOUT, record_history_chains=False)
+        async def waiter(controller: SessionController, ev: AstrMessageEvent):
+            who = parse_singer(ev.message_str or "")
+            if who:
+                answer["v"] = default if who == "any" else who
+                controller.stop()
+            elif not answer.get("asked_again"):
+                answer["asked_again"] = True
+                await ev.send(ev.plain_result("回「芙宁娜」或者「大肥鱼」就好~"))
+                controller.keep(timeout=ASK_TIMEOUT, reset_timeout=True)
+            else:  # 两次都认不出来，就按默认的来，别一直卡着
+                answer["v"] = default
+                controller.stop()
+
+        try:
+            await waiter(event, SenderFilter())
+        except TimeoutError:
+            pass
+        if "v" not in answer:
+            who = "那就请特邀嘉宾大肥鱼登台吧" if default == "dafeiyu" else "那本女士就亲自来吧"
+            await event.send(event.plain_result(f"好久没等到回复……{who}"))
+            return default
+        return answer["v"]
 
     async def _deliver(self, umo: str, job: dict):
         """后台：等唱歌服务做完，发“开嗓”提示和清唱；做不了就发拒绝的话。
@@ -479,9 +541,9 @@ class DafeiyuVoice(Star):
                 return
             warned = True
             if job["stretch"] == "too_high":
-                tip = self.cfg("stretch_tip_high", "这首对我来说有点高…我降个调试试，可能唱得不太好，别笑我呀(｡•́︿•̀｡)")
+                tip = self.cfg("stretch_tip_high", "这首的调子起得有点高……得降个调来演绎，谁也不许笑场！")
             else:
-                tip = self.cfg("stretch_tip_low", "这首调子好低，像是男生的歌…我升个调试试，可能唱得不太像，别嫌弃呀(*/ω＼*)")
+                tip = self.cfg("stretch_tip_low", "这首调子低得像男声的戏份……升个调试试，唱得不像也要鼓掌哦")
             if tip:
                 await self.context.send_message(umo, MessageChain(chain=[Comp.Plain(tip)]))
 
@@ -514,7 +576,10 @@ class DafeiyuVoice(Star):
             if not warned and job.get("stretch"):
                 await warn_stretch()
                 await asyncio.sleep(1.5)
-            tip = self.cfg("sing_start_tip", "咳咳，开嗓了~")
+            if job.get("voice") == "dafeiyu":  # 特邀嘉宾大肥鱼唱的
+                tip = self.cfg("guest_start_tip", "这首本大导演请来了特邀嘉宾大肥鱼，掌声欢迎！")
+            else:
+                tip = self.cfg("sing_start_tip", "咳咳……各位观众，好戏开场！")
             if tip:
                 await self.context.send_message(umo, MessageChain(chain=[Comp.Plain(tip)]))
                 await asyncio.sleep(1.5)
@@ -535,14 +600,15 @@ class DafeiyuVoice(Star):
 
     @filter.llm_tool(name="sing_song")
     async def sing_song(self, event: AstrMessageEvent, song_name: str, artist: str = "", start: str = "",
-                        confirmed=False) -> str:
-        """让大肥鱼用自己的声音清唱一段歌。有人让你唱歌、点歌、让你学一首歌时调用。调用后立刻返回，清唱做好后会自动发到群里。
-        工具可能先让你向对方确认歌名或版本；对方确认后再调用一次并带 confirmed=true。
+                        singer: str = "", confirmed=False) -> str:
+        """让你用自己的声音清唱一段歌，或者请特邀嘉宾大肥鱼来唱。有人让你唱歌、点歌、让你学一首歌时调用。调用后立刻返回，清唱做好后会自动发到群里。
+        工具可能先让你向对方确认歌名、版本或者想听谁唱；对方回答后照提示再调用一次。
 
         Args:
             song_name(string): 歌名，不要书名号；对方说了版本（如“司风版”“Live 版”）就原样写进歌名，例如 雨爱(司风版)
             artist(string): 对方说的歌手或翻唱者；没说就留空
             start(string): 对方说了从哪开始唱就填，如 0:15 或 1:47；没说就留空
+            singer(string): 谁来唱：对方明确要你自己唱就填 芙宁娜，要特邀嘉宾大肥鱼唱就填 大肥鱼；对方没说就留空，工具会让你先问
             confirmed(boolean): 只有对方已经明确确认“就是这首”之后才填 true；第一次调用不要填
         """
         name = song_name.strip("《》 ")
@@ -551,8 +617,25 @@ class DafeiyuVoice(Star):
             start = None  # 看不懂的起点就不传，免得唱歌服务直接报错
         same = "song_name、artist、start 都不变"
         confirmed = str(confirmed).strip().lower() in ("true", "1", "yes", "是")
+        voice = parse_singer(singer) if singer else None
+        if voice == "any":
+            voice = self.default_singer()
+        ask = voice is None and self.cfg("ask_singer", True)
+        default_label = SINGERS[self.default_singer()]
+
+        def ask_singer_text(extra=""):
+            return (f"先用一句话问对方想听谁来唱《{name}》：你亲自唱，还是请特邀嘉宾大肥鱼登台。"
+                    "用你平时的口吻问，比如“这首想听本女士亲自献唱，还是请特邀嘉宾大肥鱼登台？”，现在不要说已经开唱。"
+                    f"对方选了再调用 sing_song，{same}{extra}，singer 填“芙宁娜”或“大肥鱼”；"
+                    f"对方说随便、都行，就填“{default_label}”。")
+
+        if ask and confirmed:  # 对方刚确认了版本（要去学），学之前先问谁唱
+            return ask_singer_text("，confirmed=true")
         resp = await self._request_song(event, name, artist or "", start, learn=self._can_learn(event),
-                                        suggest=not confirmed, confirmed=confirmed)
+                                        suggest=not confirmed, confirmed=confirmed, voice=voice, probe=ask)
+        if resp.get("status") == "found":  # 库里有，先问谁唱
+            name = song_title(resp.get("song") or name)
+            return ask_singer_text()
         if resp.get("reason") == "did_you_mean":
             near = resp["suggestions"][0]
             t, a = song_title(near), song_artist(near)
@@ -568,14 +651,17 @@ class DafeiyuVoice(Star):
         if resp.get("reason") == "not_found":
             await self._wish(song_name.strip("《》 "), artist or "")
         status = resp.get("status")
+        guest = resp.get("voice") == "dafeiyu"
+        who = "特邀嘉宾大肥鱼来唱，不是你自己唱" if guest else "你亲自唱"
         if status == "done":
-            return f"《{song_name}》之前唱过，马上就会发出去。用一句话告诉对方马上开唱，不要把歌词打出来。"
+            return (f"《{song_name}》之前唱过（{who}），马上就会发出去。用一句话告诉对方马上开唱"
+                    f"{'、嘉宾这就登台' if guest else ''}，不要把歌词打出来。")
         if status in ("queued", "running") and resp.get("learning"):
-            return (f"《{song_name}》还没学过，已经开始现学，大约 {self._eta_text(resp)}后自动发出清唱"
-                    "（学下来如果发现原唱太高或太低，会升降调试着唱，到时会先说一声）。用一句话告诉对方你要先去练一下、让对方等等，不要把歌词打出来。")
+            return (f"《{song_name}》还没学过，已经开始现学，{who}，大约 {self._eta_text(resp)}后自动发出清唱"
+                    "（学下来如果发现原唱太高或太低，会升降调试着唱，到时会先说一声）。用一句话告诉对方要先去排练一下、让对方等等，不要把歌词打出来。")
         if status in ("queued", "running"):
-            return (f"已经开始准备《{song_name}》，大约 {self._eta_text(resp)}后自动发出清唱。"
-                    "用一句话让对方稍等，不要把歌词打出来。")
+            return (f"已经开始准备《{song_name}》，{who}，大约 {self._eta_text(resp)}后自动发出清唱。"
+                    f"用一句话让对方稍等{'（嘉宾正在后台准备）' if guest else ''}，不要把歌词打出来。")
         songs = "、".join(s.partition("-")[2] or s for s in self.local_songs()[:8])
         why = {
             "disabled": "这个群没有开放唱歌",
@@ -588,37 +674,48 @@ class DafeiyuVoice(Star):
         }.get(resp.get("reason"), resp.get("message") or "唱不了")
         hint = (f"可以推荐歌单里的歌：{songs}。"
                 if songs and resp.get("reason") in ("not_found", "blacklisted", "learn_limit", "learn_blocked") else "")
-        return f"唱不了：{why}。用撒娇的语气拒绝对方，{hint}不要把歌词打出来。"
+        return f"唱不了：{why}。用芙宁娜的口吻傲娇地推掉，{hint}不要把歌词打出来。"
 
     @filter.command("唱")
+    @staticmethod
+    def _pop_singer(parts: list):
+        """点歌指令最后一段是“芙宁娜/大肥鱼”就当作指定谁唱（/唱 泡沫 芙宁娜）。"""
+        if len(parts) >= 2 and parts[-1].strip().lower() in SINGER_EXACT:
+            return SINGER_EXACT[parts.pop().strip().lower()]
+        return None
+
     async def sing_cmd(self, event: AstrMessageEvent):
-        """点歌：/唱 歌名 [歌手] [起点如 1:47]"""
+        """点歌：/唱 歌名 [歌手] [起点如 1:47] [芙宁娜|大肥鱼]"""
         parts = re.sub(r"\s+", " ", event.get_message_str().strip()).split(" ")[1:]
+        singer = self._pop_singer(parts)
         start = None
         if parts and TIME_RE.match(parts[-1]):
             start = parts.pop().replace("：", ":").rstrip("秒s")
+        singer = singer or self._pop_singer(parts)
         if not parts:
             yield event.plain_result("要唱什么呀？发 /唱 歌名 就好，比如 /唱 多远都要在一起")
             return
-        # 歌名可能带空格：先整句当歌名找；找不到再把最后一段当歌手
+        # 歌名可能带空格：先整句当歌名找；找不到再把最后一段当歌手。先只问库里有没有（probe），选好谁唱再接单
         song, artist = " ".join(parts), ""
         if "-" in song and len(parts) == 1:
             artist, _, song = song.partition("-")
-        resp = await self._request_song(event, song, artist, start, suggest=False)
+        resp = await self._request_song(event, song, artist, start, suggest=False, probe=True)
         if resp.get("reason") == "not_found" and len(parts) >= 2:
-            resp = await self._request_song(event, " ".join(parts[:-1]), parts[-1], start, suggest=False)
+            resp = await self._request_song(event, " ".join(parts[:-1]), parts[-1], start, suggest=False, probe=True)
         if resp.get("reason") == "not_found":  # 再问一次，这次让服务找歌单里只差一两个字的歌
-            resp = await self._request_song(event, song, artist, start)
-        async for r in self._sing_flow(event, song, artist, start, resp):
+            resp = await self._request_song(event, song, artist, start, probe=True)
+        async for r in self._sing_flow(event, song, artist, start, resp, singer):
             yield r
 
     @filter.custom_filter(LearnCmdFilter, False)
     async def learn_cmd(self, event: AstrMessageEvent):
-        """学一首歌（按学歌设置决定谁能用）：/学歌 歌名 [歌手] [起点如 0:15]"""
+        """学一首歌（按学歌设置决定谁能用）：/学歌 歌名 [歌手] [起点如 0:15] [芙宁娜|大肥鱼]"""
         parts = re.sub(r"\s+", " ", event.get_message_str().strip()).split(" ")[1:]
+        singer = self._pop_singer(parts)
         start = None
         if parts and TIME_RE.match(parts[-1]):
             start = parts.pop().replace("：", ":").rstrip("秒s")
+        singer = singer or self._pop_singer(parts)
         if not parts:
             yield event.plain_result("用法：/学歌 歌名 歌手 起点，比如 /学歌 雨爱(司风版) 时年先生 0:15")
             return
@@ -631,12 +728,14 @@ class DafeiyuVoice(Star):
             song, artist = " ".join(parts[:-1]), parts[-1]
         elif "-" in song:
             artist, _, song = song.partition("-")
-        resp = await self._request_song(event, song, artist, start)
-        async for r in self._sing_flow(event, song, artist, start, resp):
+        resp = await self._request_song(event, song, artist, start, probe=True)
+        async for r in self._sing_flow(event, song, artist, start, resp, singer):
             yield r
 
-    async def _sing_flow(self, event: AstrMessageEvent, song: str, artist: str, start, resp: dict):
-        """点歌的后半段：歌单里有相近的先问“是不是这首”，没有就（能学的话）确认版本后去学，最后回话。"""
+    async def _sing_flow(self, event: AstrMessageEvent, song: str, artist: str, start, resp: dict,
+                         singer: str | None = None):
+        """点歌的后半段：歌单里有相近的先问“是不是这首”，没有就（能学的话）确认版本后去学；
+        能唱的话先问想听谁唱（点歌时说了就不问），再接单，最后回话。"""
         if resp.get("reason") == "did_you_mean":  # 打错字，或者库里只有别人唱的同名歌：先问是不是歌单里那首
             near = resp["suggestions"][0]
             who = f"（{song_artist(near)}）" if song_artist(near) else ""
@@ -648,9 +747,16 @@ class DafeiyuVoice(Star):
                 yield event.plain_result("好久没等到回复，那先不唱啦~")
                 return
             if ok:
-                resp = await self._request_song(event, song_title(near), song_artist(near), start, suggest=False)
+                resp = await self._request_song(event, song_title(near), song_artist(near), start, suggest=False,
+                                                probe=True)
             else:
                 resp = {"status": "failed", "reason": "not_found", "refuse": self.refuse("not_found")}
+
+        if resp.get("status") == "found":  # 库里有：问谁唱，再正式点
+            stem = resp.get("song") or song
+            voice = await self._choose_singer(event, singer)
+            resp = await self._request_song(event, song_title(stem), song_artist(stem), start, suggest=False,
+                                            voice=voice)
 
         if resp.get("reason") == "not_found" and self._can_learn(event):
             # 库里没有：先只搜索，把要学的版本给点歌的人确认，确认了才下载
@@ -663,8 +769,9 @@ class DafeiyuVoice(Star):
                         "好~ 那先不学了。换个写法再点吧，带上歌手名会准很多，比如 /唱 多远都要在一起 邓紫棋"
                         if ok is False else "好久没等到回复，那先不学啦~")
                     return
+                voice = await self._choose_singer(event, singer)
                 resp = await self._request_song(event, resp["title"], resp["artist"], start, learn=True,
-                                                suggest=False, confirmed=True, pick=resp["candidate"])
+                                                suggest=False, confirmed=True, pick=resp["candidate"], voice=voice)
         if resp.get("reason") == "not_found":
             await self._wish(song, artist)
         status = resp.get("status")
@@ -673,19 +780,22 @@ class DafeiyuVoice(Star):
             # 大模型又调一次 sing_song，结果唱两遍
             event.stop_event()
             return
+        guest = resp.get("voice") == "dafeiyu"
         if status in ("queued", "running") and resp.get("learning"):
-            yield event.plain_result(f"这首我还没学过，先去学一下~ 大概 {self._eta_text(resp)}后开唱")
+            who = "再请特邀嘉宾大肥鱼来唱" if guest else "本女士再亲自登台"
+            yield event.plain_result(f"这首还没排练过，先去学一下~ 学好了{who}，大概 {self._eta_text(resp)}后开唱")
             return
         if status in ("queued", "running"):
             ahead = int(resp.get("position") or 1) - 1
             queue = f"前面还有 {ahead} 首，" if ahead > 0 else ""
-            yield event.plain_result(f"收到~ {queue}让我酝酿一下，大概 {self._eta_text(resp)}后开唱")
+            who = "特邀嘉宾大肥鱼正在后台准备" if guest else "本女士去后台准备一下"
+            yield event.plain_result(f"收到~ {queue}{who}，大概 {self._eta_text(resp)}后开唱")
             return
         yield event.plain_result(resp.get("refuse") or self.refuse("error"))
 
     @filter.command("歌单")
     async def song_list(self, event: AstrMessageEvent):
-        """看看大肥鱼会唱哪些歌"""
+        """看看会唱哪些歌"""
         if await self.health("sing"):  # 服务开着就问它（顺便把 待导入/ 里的新歌整理进来）
             try:
                 s = await self.http()
@@ -700,7 +810,8 @@ class DafeiyuVoice(Star):
             yield event.plain_result("我的歌单还是空的呢…")
             return
         lines = [f"{i}. {s}" for i, s in enumerate(songs, 1)]
-        yield event.plain_result("我会唱这些~ 发 /唱 歌名 点歌\n" + "\n".join(lines))
+        yield event.plain_result("本女士的剧目单~ 发 /唱 歌名 点歌（末尾加 芙宁娜 或 大肥鱼 可以直接指定谁唱）\n"
+                                 + "\n".join(lines))
 
     @filter.command_group("唱歌")
     def sing_group(self):
@@ -718,8 +829,9 @@ class DafeiyuVoice(Star):
             yield event.plain_result(f"唱歌服务正在启动…{here}")
             return
         run = h.get("running")
-        now = f"正在做《{run['song']}》（{run['stage']}）" if run else "现在空闲"
-        yield event.plain_result(f"{now}，还有 {h.get('queue', 0)} 首在排队，音色：{voice_label(h)}{here}")
+        now = f"正在做《{run['song']}》（{run.get('voice_label', '')}，{run['stage']}）" if run else "现在空闲"
+        default = SINGERS.get(h.get("default_voice") or self.default_singer(), "大肥鱼")
+        yield event.plain_result(f"{now}，还有 {h.get('queue', 0)} 首在排队；没选谁唱时默认请{default}{here}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @sing_group.command("开")
@@ -738,45 +850,31 @@ class DafeiyuVoice(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @sing_group.command("音色")
     async def sing_voice(self, event: AstrMessageEvent, name: str = ""):
-        """看 / 切换唱歌的音色（管理员）：/唱歌 音色 原来 或 /唱歌 音色 新"""
-        key = VOICE_ALIASES.get(name.strip().lower())
-        if name.strip() and not key:
-            yield event.plain_result("只能选「原来」（原音色）或「新」（新音色·雨爱）")
+        """看 / 改没选谁唱时默认请谁（管理员）：/唱歌 音色 大肥鱼 或 /唱歌 音色 芙宁娜"""
+        name = name.strip().lower()
+        key = SINGER_EXACT.get(name) or {"原来": "dafeiyu", "原音色": "dafeiyu", "old": "dafeiyu"}.get(name)
+        if name in ("新", "新音色", "雨爱", "new"):
+            yield event.plain_result("雨爱音色已经去掉了，现在只有芙宁娜和特邀嘉宾大肥鱼")
+            return
+        if name and not key:
+            yield event.plain_result("只能选「芙宁娜」或「大肥鱼」")
+            return
+        ask = "点歌时会先问对方想听谁唱，没回答就用它" if self.cfg("ask_singer", True) else "点歌时不问，直接用它"
+        if not key:
+            yield event.plain_result(f"默认歌手是{SINGERS[self.default_singer()]}（{ask}）\n"
+                                     "改：/唱歌 音色 芙宁娜 或 /唱歌 音色 大肥鱼")
             return
         script = Path(self.cfg("control_script") or "~/dafeiyu-tools/dafeiyu-voice.sh").expanduser()
-        if not key:
-            h = await self.health("sing")
-            now = f"正在用{voice_label(h)}" if h else "唱歌服务没开"
-            yield event.plain_result(f"唱歌音色选的是{VOICE_NAMES[self.selected_voice()]}（{now}）\n"
-                                     "切换：/唱歌 音色 原来 或 /唱歌 音色 新")
-            return
-        if key == self.selected_voice():
-            yield event.plain_result(f"唱歌本来就是{VOICE_NAMES[key]}")
-            return
-        yield event.plain_result(f"正在换成{VOICE_NAMES[key]}，唱歌服务开着的话要重启，稍等……")
         try:
             proc = await asyncio.create_subprocess_exec(
                 "/bin/bash", str(script), "voice", key,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,  # 重启出来的服务和 AstrBot 分开
             )
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
-        except asyncio.TimeoutError:
-            yield event.plain_result("切换等了 5 分钟还没好，用 /唱歌 状态 看看")
-            return
-        except OSError as e:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except (asyncio.TimeoutError, OSError) as e:
             yield event.plain_result(f"启停脚本运行失败：{e}")
             return
-        yield event.plain_result(out.decode(errors="ignore").strip() or "已切换")
-
-    def selected_voice(self) -> str:
-        """启停脚本记下的唱歌音色（new / old），没记就是 new。"""
-        script = Path(self.cfg("control_script") or "~/dafeiyu-tools/dafeiyu-voice.sh").expanduser()
-        try:
-            name = (script.parent / "sing_voice.conf").read_text().strip()
-        except OSError:
-            name = ""
-        return name if name in VOICE_NAMES else "new"
+        yield event.plain_result((out.decode(errors="ignore").strip() or "已切换") + f"（{ask}）")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @sing_group.command("清缓存")
@@ -796,7 +894,7 @@ class DafeiyuVoice(Star):
                     n += 1
             title = song_title(stem)
             if n:
-                yield event.plain_result(f"清掉了《{title}》的 {(n + 1) // 2} 份清唱（新音色、原音色的都清了），下次点会重新唱")
+                yield event.plain_result(f"清掉了《{title}》的 {(n + 1) // 2} 份清唱（芙宁娜、大肥鱼的都清了），下次点会重新唱")
             else:
                 yield event.plain_result(f"《{title}》还没有做好的清唱，不用清")
             return

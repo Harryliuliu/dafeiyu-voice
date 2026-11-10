@@ -1,0 +1,78 @@
+{
+  "refs": {
+    "芙宁娜_A_平稳_23秒": {
+      "median_hz": 308
+    },
+    "芙宁娜_B_明亮_22秒": {
+      "median_hz": 368
+    },
+    "原大肥鱼": {
+      "median_hz": 307
+    },
+    "雨爱": {
+      "median_hz": 371
+    }
+  },
+  "songs": {
+    "1_唯一_原唱人声": {
+      "median_hz": 286,
+      "p90_hz": 351
+    },
+    "2_See You Again_原唱人声": {
+      "median_hz": 350,
+      "p90_hz": 510
+    },
+    "3_泡沫_原唱人声": {
+      "median_hz": 414,
+      "p90_hz": 529
+    },
+    "1_唯一_芙宁娜A_SeedVC.wav": {
+      "seconds": 173,
+      "semitone": 0,
+      "median_hz": 293,
+      "finite": true
+    },
+    "2_See You Again_芙宁娜A_SeedVC.wav": {
+      "seconds": 169,
+      "semitone": 0,
+      "median_hz": 351,
+      "finite": true
+    },
+    "3_泡沫_芙宁娜A_SeedVC.wav": {
+      "seconds": 168,
+      "semitone": -3,
+      "median_hz": 346,
+      "finite": true
+    },
+    "1_唯一_芙宁娜B_SeedVC.wav": {
+      "seconds": 139,
+      "semitone": 0,
+      "median_hz": 289,
+      "finite": true
+    },
+    "2_See You Again_芙宁娜B_SeedVC.wav": {
+      "seconds": 135,
+      "semitone": 0,
+      "median_hz": 350,
+      "finite": true
+    },
+    "3_泡沫_芙宁娜B_SeedVC.wav": {
+      "seconds": 140,
+      "semitone": -3,
+      "median_hz": 347,
+      "finite": true
+    },
+    "3_泡沫_0_原大肥鱼.wav": {
+      "seconds": 166,
+      "semitone": -3,
+      "median_hz": 346,
+      "finite": true
+    },
+    "3_泡沫_0_雨爱.wav": {
+      "seconds": 167,
+      "semitone": -3,
+      "median_hz": 346,
+      "finite": true
+    }
+  }
+}

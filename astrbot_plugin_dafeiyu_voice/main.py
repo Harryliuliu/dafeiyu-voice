@@ -469,6 +469,8 @@ class DafeiyuVoice(Star):
         @session_waiter(timeout=ASK_TIMEOUT, record_history_chains=False)
         async def waiter(controller: SessionController, ev: AstrMessageEvent):
             text = re.sub(r"\s+", "", ev.message_str or "")
+            if not text:  # QQ 的“正在输入”之类空事件，不是回答，接着等（不动倒计时）
+                return
             if YES_RE.match(text):
                 answer["v"] = True
                 controller.stop()
@@ -513,6 +515,10 @@ class DafeiyuVoice(Star):
 
         @session_waiter(timeout=ASK_TIMEOUT, record_history_chains=False)
         async def waiter(controller: SessionController, ev: AstrMessageEvent):
+            # 2026-11-10 私聊：点歌后 1 秒内 QQ 连着来了几个空事件（多半是“正在输入”），
+            # 被当成两次答不上来，直接按默认请了大肥鱼。空事件不算回答，接着等（不动倒计时）
+            if not (ev.message_str or "").strip():
+                return
             who = parse_singer(ev.message_str or "")
             if who:
                 answer["v"] = default if who == "any" else who

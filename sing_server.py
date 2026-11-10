@@ -363,7 +363,7 @@ def new_job(stem, kind, path, start, duration, key, voice):
         "job_id": jid, "song": stem, "source": kind, "status": "queued", "stage": "排队",
         "start": start, "duration": duration, "reason": "", "message": "",
         "file": "", "semitone": None, "pitch": None, "stretch": None,
-        "voice": voice, "voice_label": VOICES[voice]["label"], "separation": None,
+        "voice": voice, "voice_label": VOICES[voice]["label"], "separation": None, "start_note": None,
         "created": time.time(), "started": None, "finished": None,
         "_path": str(path), "_key": key,
     }
@@ -390,7 +390,7 @@ def fail(job, reason, message):
 
 
 def cache_name(stem, start, duration, voice):
-    start_txt = "auto" if start is None else f"{start:.1f}"
+    start_txt = "chorus" if start is None else f"{start:.1f}"  # 没写起点 = 自动挑副歌（11-10 以前是 auto=人声最响）
     safe = re.sub(r'[\\/:*?"<>|]', "_", stem)
     # 换了转换设置、歌手或分离方式，旧缓存自动不用
     if voice == "furina":
@@ -575,6 +575,34 @@ def rvc_convert(vocals, semitone, tag):
         dst.unlink(missing_ok=True)
 
 
+def auto_start(stem, whole, dur, job):
+    """没指定起点时唱哪段：先按歌词找副歌、挑最好唱的那遍（chorus.py）；找不到歌词就挑人声最响的一段。"""
+    import numpy as np
+    from sing_engine import SR, loudest_window
+
+    job["stage"] = "挑副歌"
+    try:
+        import chorus
+        import torchaudio
+
+        torch = ENGINE.torch
+
+        def f0_track(mono):
+            with torch.no_grad():
+                w16 = torchaudio.functional.resample(
+                    torch.from_numpy(np.ascontiguousarray(mono)).float()[None], SR, 16000)
+                return ENGINE.f0_fn(w16[0], thred=0.03)
+
+        got = chorus.pick_start(stem, whole, f0_track, LIB / "歌词", length=dur, log=log.info)
+        if got:
+            job["start_note"] = got[1]
+            return got[0]
+    except Exception as e:  # noqa: BLE001
+        log.warning("挑副歌出错（%s），改挑人声最响的一段", e)
+    job["start_note"] = "没找到歌词，挑的人声最响的一段"
+    return loudest_window(whole.mean(axis=1), dur)
+
+
 def run_job(job):
     """在工作线程里跑：（学歌 →）截取 → 分离 → 去和声 → 检查难度 → 转换 → 写缓存。"""
     import numpy as np
@@ -619,7 +647,7 @@ def run_job(job):
                 os.utime(full)
                 job["separation"] = job["separation"] or "Roformer 人声（整首，已缓存）"
                 if start is None:
-                    start = loudest_window(whole.mean(axis=1), dur)
+                    start = auto_start(stem, whole, dur, job)
                 segment = whole[int(start * SR):int((start + dur) * SR)]
             else:
                 job["stage"] = "分离"
@@ -651,7 +679,7 @@ def run_job(job):
         os.replace(tmp, dest)
         (dest.with_suffix(".json")).write_text(json.dumps(
             {"song": stem, "source": kind, "start": job["start"], "duration": dur, "voice": voice,
-             "voice_label": VOICES[voice]["label"], "separation": job["separation"],
+             "voice_label": VOICES[voice]["label"], "separation": job["separation"], "start_note": job.get("start_note"),
              "semitone": semitone, "pitch": job["pitch"], "stretch": stretch}, ensure_ascii=False))
         prune_cache()
         elapsed = time.time() - t0

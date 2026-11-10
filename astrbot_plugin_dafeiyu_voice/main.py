@@ -954,7 +954,7 @@ class DafeiyuVoice(Star):
         if parts and (TIME_RE.match(parts[-1]) or parts[-1] in ("自动", "auto")):
             start = parts.pop().replace("：", ":").rstrip("秒s")
         if not parts:
-            yield event.plain_result("用法：/唱歌 片段 歌名 1:47（从 1 分 47 秒起唱）；/唱歌 片段 歌名 自动（挑人声最响的一段）")
+            yield event.plain_result("用法：/唱歌 片段 歌名 1:47（从 1 分 47 秒起唱）；/唱歌 片段 歌名 自动（按歌词挑最好唱的那遍副歌）")
             return
         stem, hint = self._pick_song(" ".join(parts))
         if not stem:
@@ -972,7 +972,7 @@ class DafeiyuVoice(Star):
             keep.append(line)
         title = song_title(stem)
         if start is None:
-            now = f"从 {old} 开始唱" if old else "没指定，自动挑人声最响的一段"
+            now = f"从 {old} 开始唱" if old else "没指定，自动挑副歌（找不到歌词时挑人声最响的一段）"
             yield event.plain_result(f"《{title}》现在{now}。改的话：/唱歌 片段 {title} 1:47")
             return
         if start not in ("自动", "auto"):
@@ -982,7 +982,7 @@ class DafeiyuVoice(Star):
         tmp = path.with_suffix(".tmp")
         tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
         tmp.replace(path)
-        now = f"从 {start} 开始唱" if start not in ("自动", "auto") else "自动挑人声最响的一段"
+        now = f"从 {start} 开始唱" if start not in ("自动", "auto") else "自动挑副歌"
         yield event.plain_result(f"好，《{title}》以后{now}（原来：{old or '自动'}）。"
                                  "换了段落要重新唱一遍，第一次点会慢一点")
 
